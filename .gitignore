@@ -1,0 +1,9 @@
+# Windows shortcut (machine-specific path)
+*.lnk
+
+# Logs (generated at runtime)
+*-log.txt
+
+# OS
+Thumbs.db
+Desktop.ini
