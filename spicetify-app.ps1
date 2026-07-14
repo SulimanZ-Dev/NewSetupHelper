@@ -7,9 +7,36 @@ $ErrorActionPreference = 'Continue'
 $script:running = $true
 $script:SleepTimerJobName = 'SpicetifyHelperSleepTimer'
 
+$ScriptDirectory = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$ThemeConfigPath = Join-Path $ScriptDirectory 'spicetify-helper-config.json'
 $LogPath = Join-Path $env:TEMP 'spicetify-helper-log.txt'
 $SessionStart = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Add-Content -Path $LogPath -Value "=== Session started: $SessionStart ==="
+
+$script:ThemePresets = [ordered]@{
+    Hacker = @{
+        Background = 'Black'; Foreground = 'Green'; Accent = 'Green'; Border = 'DarkGreen'; Muted = 'DarkGray'
+        Success = 'Green'; Warning = 'Yellow'; Error = 'Red'; Prompt = 'Green'
+    }
+    Alert = @{
+        Background = 'Black'; Foreground = 'DarkRed'; Accent = 'Red'; Border = 'DarkRed'; Muted = 'DarkRed'
+        Success = 'DarkRed'; Warning = 'Red'; Error = 'Red'; Prompt = 'Red'
+    }
+    Classic = @{
+        Background = 'Black'; Foreground = 'White'; Accent = 'Cyan'; Border = 'DarkCyan'; Muted = 'DarkGray'
+        Success = 'Green'; Warning = 'Yellow'; Error = 'Red'; Prompt = 'Cyan'
+    }
+    Ocean = @{
+        Background = 'Black'; Foreground = 'Cyan'; Accent = 'Cyan'; Border = 'DarkCyan'; Muted = 'DarkGray'
+        Success = 'Green'; Warning = 'Yellow'; Error = 'Red'; Prompt = 'Cyan'
+    }
+    Amber = @{
+        Background = 'Black'; Foreground = 'DarkYellow'; Accent = 'Yellow'; Border = 'DarkYellow'; Muted = 'DarkGray'
+        Success = 'Green'; Warning = 'Yellow'; Error = 'Red'; Prompt = 'DarkYellow'
+    }
+}
+$script:CurrentThemeName = 'Classic'
+$script:Theme = $script:ThemePresets[$script:CurrentThemeName]
 
 #region Logging
 
@@ -30,20 +57,124 @@ Write-Log -Message "Script v$ScriptVersion started"
 
 #region UI Helpers
 
+function Get-ThemeColor {
+    param([string]$Role = 'Foreground')
+
+    if ($script:Theme.ContainsKey($Role)) { return $script:Theme[$Role] }
+    return $script:Theme.Foreground
+}
+
+function Write-ThemedHost {
+    param(
+        [string]$Text = '',
+        [string]$Role = 'Foreground',
+        [switch]$NoNewline
+    )
+
+    Write-Host $Text -ForegroundColor (Get-ThemeColor $Role) -NoNewline:$NoNewline
+}
+
+function Save-ThemeConfig {
+    $config = [ordered]@{
+        Theme = $script:CurrentThemeName
+    }
+
+    try {
+        $config | ConvertTo-Json | Set-Content -LiteralPath $ThemeConfigPath -Encoding UTF8
+    }
+    catch {
+        Write-Log -Message "Theme config save failed: $($_.Exception.Message)" -Level 'WARN'
+    }
+}
+
+function Set-ActiveTheme {
+    param(
+        [string]$Name,
+        [switch]$Persist
+    )
+
+    if (-not $script:ThemePresets.Contains($Name)) {
+        $Name = 'Classic'
+    }
+
+    $script:CurrentThemeName = $Name
+    $script:Theme = $script:ThemePresets[$Name]
+
+    try {
+        $Host.UI.RawUI.BackgroundColor = $script:Theme.Background
+        $Host.UI.RawUI.ForegroundColor = $script:Theme.Foreground
+    }
+    catch {
+        Write-Log -Message "Console theme apply failed: $($_.Exception.Message)" -Level 'WARN'
+    }
+
+    if ($Persist) { Save-ThemeConfig }
+}
+
+function Load-ThemeConfig {
+    if (-not (Test-Path -LiteralPath $ThemeConfigPath)) { return $false }
+
+    try {
+        $config = Get-Content -LiteralPath $ThemeConfigPath -Raw | ConvertFrom-Json
+        if ($config.Theme -and $script:ThemePresets.Contains($config.Theme)) {
+            Set-ActiveTheme -Name $config.Theme
+            return $true
+        }
+    }
+    catch {
+        Write-Log -Message "Theme config load failed: $($_.Exception.Message)" -Level 'WARN'
+    }
+
+    return $false
+}
+
+function Select-Theme {
+    param([switch]$FirstRun)
+
+    while ($true) {
+        Write-Banner
+        if ($FirstRun) {
+            Write-ThemedHost '  Pick a console theme to start.' 'Accent'
+        }
+        else {
+            Write-ThemedHost '  CHANGE THEME' 'Accent'
+        }
+        Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+        $names = @($script:ThemePresets.Keys)
+        for ($i = 0; $i -lt $names.Count; $i++) {
+            $marker = if ($names[$i] -eq $script:CurrentThemeName) { ' *' } else { '  ' }
+            Write-ThemedHost ("  [{0}] {1}{2}" -f ($i + 1), $names[$i], $marker) 'Foreground'
+        }
+        Write-ThemedHost ''
+        $choice = Read-MenuChoice -Prompt 'Theme number'
+        $index = 0
+        if ([int]::TryParse($choice, [ref]$index) -and $index -ge 1 -and $index -le $names.Count) {
+            Set-ActiveTheme -Name $names[$index - 1] -Persist
+            Write-Banner
+            Write-ThemedHost "  Theme changed to $script:CurrentThemeName." 'Success'
+            if (-not $FirstRun) { Pause-Script }
+            return
+        }
+
+        Write-ThemedHost '  Invalid theme choice.' 'Error'
+        Pause-Script
+    }
+}
+
 function Write-Banner {
     Clear-Host
-    Write-Host ''
-    Write-Host '  +======================================================+' -ForegroundColor DarkCyan
-    Write-Host '  |                                                      |' -ForegroundColor DarkCyan
-    Write-Host '  |' -NoNewline -ForegroundColor DarkCyan
-    Write-Host '     SPICETIFY + PC SETUP HELPER' -NoNewline -ForegroundColor Cyan
-    Write-Host '              |' -ForegroundColor DarkCyan
-    Write-Host '  |' -NoNewline -ForegroundColor DarkCyan
-    Write-Host '     Install fast. Customize Spotify. Own your PC.' -NoNewline -ForegroundColor DarkGray
-    Write-Host '   |' -ForegroundColor DarkCyan
-    Write-Host '  |                                                      |' -ForegroundColor DarkCyan
-    Write-Host '  +======================================================+' -ForegroundColor DarkCyan
-    Write-Host ''
+    Write-ThemedHost ''
+    Write-ThemedHost '  +======================================================+' 'Border'
+    Write-ThemedHost '  |                                                      |' 'Border'
+    Write-ThemedHost '  |' 'Border' -NoNewline
+    Write-ThemedHost '     SPICETIFY + PC SETUP HELPER' 'Accent' -NoNewline
+    Write-ThemedHost '              |' 'Border'
+    Write-ThemedHost '  |' 'Border' -NoNewline
+    Write-ThemedHost '     Install fast. Customize Spotify. Own your PC.' 'Muted' -NoNewline
+    Write-ThemedHost '   |' 'Border'
+    Write-ThemedHost '  |                                                      |' 'Border'
+    Write-ThemedHost '  +======================================================+' 'Border'
+    Write-ThemedHost ''
 }
 
 function Write-Step {
@@ -52,8 +183,8 @@ function Write-Step {
         [int]$Total,
         [string]$Message
     )
-    Write-Host "  [$Number/$Total] " -NoNewline -ForegroundColor DarkCyan
-    Write-Host $Message -ForegroundColor White
+    Write-ThemedHost "  [$Number/$Total] " 'Border' -NoNewline
+    Write-ThemedHost $Message 'Foreground'
 }
 
 function Write-StatusLine {
@@ -64,15 +195,15 @@ function Write-StatusLine {
     )
 
     $icon = if ($Ok) { '[OK]' } else { '[!!]' }
-    $color = if ($Ok) { 'Green' } else { 'Yellow' }
+    $role = if ($Ok) { 'Success' } else { 'Warning' }
 
-    Write-Host "  $icon " -NoNewline -ForegroundColor $color
-    Write-Host $Label -NoNewline -ForegroundColor White
+    Write-ThemedHost "  $icon " $role -NoNewline
+    Write-ThemedHost $Label 'Foreground' -NoNewline
     if ($Detail) {
-        Write-Host " - $Detail" -ForegroundColor DarkGray
+        Write-ThemedHost " - $Detail" 'Muted'
     }
     else {
-        Write-Host ''
+        Write-ThemedHost ''
     }
 }
 
@@ -83,17 +214,17 @@ function Write-OpResult {
     )
 
     if ($Success) {
-        Write-Host "  OK   $Label" -ForegroundColor Green
+        Write-ThemedHost "  OK   $Label" 'Success'
         Write-Log -Message "$Label - OK"
     }
     else {
-        Write-Host "  FAIL $Label" -ForegroundColor Red
+        Write-ThemedHost "  FAIL $Label" 'Error'
         Write-Log -Message "$Label - FAILED" -Level 'ERROR'
     }
 }
 
 function Pause-Script {
-    Write-Host ''
+    Write-ThemedHost ''
     Read-Host 'Press Enter to continue' | Out-Null
 }
 
@@ -127,7 +258,7 @@ function Read-PositiveInteger {
         if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) {
             return $parsed
         }
-        Write-Host '  Enter a positive whole number.' -ForegroundColor Red
+        Write-ThemedHost '  Enter a positive whole number.' 'Error'
     }
 }
 
@@ -383,130 +514,145 @@ function Prompt-DefaultBrowser {
 
 function Show-MainMenu {
     Write-Banner
-    Write-Host '========================================' -ForegroundColor DarkCyan
-    Write-Host '   SPICETIFY + PC SETUP HELPER' -ForegroundColor Cyan
-    Write-Host '========================================' -ForegroundColor DarkCyan
-    Write-Host '  [1] New PC Setup Wizard' -ForegroundColor White
-    Write-Host '  [2] System Status Check' -ForegroundColor White
-    Write-Host '  [3] Spicetify Tools     -->' -ForegroundColor White
-    Write-Host '  [4] Install Apps        -->' -ForegroundColor White
-    Write-Host '  [5] Windows Privacy     -->' -ForegroundColor White
-    Write-Host '  [6] Power and Sleep     -->' -ForegroundColor White
-    Write-Host '  [7] Utilities           -->' -ForegroundColor White
-    Write-Host '  [0] Exit' -ForegroundColor DarkGray
-    Write-Host '========================================' -ForegroundColor DarkCyan
-    Write-Host ''
+    Write-ThemedHost '========================================' 'Border'
+    Write-ThemedHost '   SPICETIFY + PC SETUP HELPER' 'Accent'
+    Write-ThemedHost '========================================' 'Border'
+    Write-ThemedHost '  [1] New PC Setup Wizard' 'Foreground'
+    Write-ThemedHost '  [2] System Status Check' 'Foreground'
+    Write-ThemedHost '  [3] Spicetify Tools     -->' 'Foreground'
+    Write-ThemedHost '  [4] Install Apps        -->' 'Foreground'
+    Write-ThemedHost '  [5] App & Repo Installer -->' 'Foreground'
+    Write-ThemedHost '  [6] Windows Privacy     -->' 'Foreground'
+    Write-ThemedHost '  [7] Power and Sleep     -->' 'Foreground'
+    Write-ThemedHost '  [8] Utilities           -->' 'Foreground'
+    Write-ThemedHost '  [9] Settings / Theme' 'Foreground'
+    Write-ThemedHost '  [0] Exit' 'Muted'
+    Write-ThemedHost '========================================' 'Border'
+    Write-ThemedHost ''
+}
+
+function Show-AppRepoInstallerMenu {
+    Write-Banner
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '   APP & REPO INSTALLER' 'Accent'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '  [1] Install selected apps' 'Foreground'
+    Write-ThemedHost '  [2] Clone selected GitHub repos' 'Foreground'
+    Write-ThemedHost '  [3] Change theme' 'Foreground'
+    Write-ThemedHost '  [0] Back to Main Menu' 'Muted'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost ''
 }
 
 function Show-SpicetifyMenu {
     Write-Banner
-    Write-Host '  SPICETIFY TOOLS' -ForegroundColor Cyan
-    Write-Host '  -----------------------------------------------------' -ForegroundColor DarkGray
-    Write-Host '   1   Install Spicetify CLI' -ForegroundColor White
-    Write-Host '   2   Install Spicetify Marketplace' -ForegroundColor White
-    Write-Host '   3   Upgrade Spicetify CLI' -ForegroundColor White
-    Write-Host '   4   Apply Config' -ForegroundColor White
-    Write-Host '   5   Restore Spotify to Original' -ForegroundColor White
-    Write-Host '   6   Restart Spotify' -ForegroundColor White
-    Write-Host '   7   Block Spotify Updates' -ForegroundColor White
-    Write-Host '   8   Unblock Spotify Updates' -ForegroundColor White
-    Write-Host '   9   After Spotify Update (backup + apply)' -ForegroundColor White
-    Write-Host '  10   Open Config Directory' -ForegroundColor White
-    Write-Host '  11   Backup Vanilla Spotify Files' -ForegroundColor White
-    Write-Host '  12   Clear Spicetify Backup' -ForegroundColor White
-    Write-Host '  13   Apply a Theme' -ForegroundColor White
-    Write-Host '  14   Remove an Extension' -ForegroundColor White
-    Write-Host '  15   List Theme and Extensions' -ForegroundColor White
-    Write-Host '  16   Check Spicetify Version' -ForegroundColor White
-    Write-Host '  17   Enable DevTools' -ForegroundColor White
-    Write-Host '  18   Export Config (ZIP)' -ForegroundColor White
-    Write-Host '  19   Import Config (ZIP)' -ForegroundColor White
-    Write-Host '   0   Back to Main Menu' -ForegroundColor DarkGray
-    Write-Host '  -----------------------------------------------------' -ForegroundColor DarkGray
-    Write-Host ''
+    Write-ThemedHost '  SPICETIFY TOOLS' 'Accent'
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    Write-ThemedHost '   1   Install Spicetify CLI' 'Foreground'
+    Write-ThemedHost '   2   Install Spicetify Marketplace' 'Foreground'
+    Write-ThemedHost '   3   Upgrade Spicetify CLI' 'Foreground'
+    Write-ThemedHost '   4   Apply Config' 'Foreground'
+    Write-ThemedHost '   5   Restore Spotify to Original' 'Foreground'
+    Write-ThemedHost '   6   Restart Spotify' 'Foreground'
+    Write-ThemedHost '   7   Block Spotify Updates' 'Foreground'
+    Write-ThemedHost '   8   Unblock Spotify Updates' 'Foreground'
+    Write-ThemedHost '   9   After Spotify Update (backup + apply)' 'Foreground'
+    Write-ThemedHost '  10   Open Config Directory' 'Foreground'
+    Write-ThemedHost '  11   Backup Vanilla Spotify Files' 'Foreground'
+    Write-ThemedHost '  12   Clear Spicetify Backup' 'Foreground'
+    Write-ThemedHost '  13   Apply a Theme' 'Foreground'
+    Write-ThemedHost '  14   Remove an Extension' 'Foreground'
+    Write-ThemedHost '  15   List Theme and Extensions' 'Foreground'
+    Write-ThemedHost '  16   Check Spicetify Version' 'Foreground'
+    Write-ThemedHost '  17   Enable DevTools' 'Foreground'
+    Write-ThemedHost '  18   Export Config (ZIP)' 'Foreground'
+    Write-ThemedHost '  19   Import Config (ZIP)' 'Foreground'
+    Write-ThemedHost '   0   Back to Main Menu' 'Muted'
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    Write-ThemedHost ''
 }
 
 function Show-AppsMenu {
     Write-Banner
-    Write-Host '=============================='
-    Write-Host '   INSTALL APPS'
-    Write-Host '=============================='
-    Write-Host '-- Music and Social --' -ForegroundColor DarkGray
-    Write-Host '  [1]  Spotify' -ForegroundColor White
-    Write-Host '  [2]  BetterDiscord' -ForegroundColor White
-    Write-Host '  [3]  Vencord' -ForegroundColor White
-    Write-Host '-- Remote and Network --' -ForegroundColor DarkGray
-    Write-Host '  [4]  AweSun Remote Desktop' -ForegroundColor White
-    Write-Host '  [5]  OFF Helper (Phone-to-PC shutdown)' -ForegroundColor White
-    Write-Host '  [6]  LANDrop' -ForegroundColor White
-    Write-Host '-- Browsers --' -ForegroundColor DarkGray
-    Write-Host '  [7]  Firefox' -ForegroundColor White
-    Write-Host '  [8]  Brave' -ForegroundColor White
-    Write-Host '  [9]  Google Chrome' -ForegroundColor White
-    Write-Host '-- Gaming --' -ForegroundColor DarkGray
-    Write-Host ' [10]  Steam' -ForegroundColor White
-    Write-Host ' [11]  Epic Games Launcher' -ForegroundColor White
-    Write-Host '-- Dev Tools --' -ForegroundColor DarkGray
-    Write-Host ' [12]  Git' -ForegroundColor White
-    Write-Host ' [13]  VS Code' -ForegroundColor White
-    Write-Host ' [14]  Node.js LTS' -ForegroundColor White
-    Write-Host ' [15]  Windows Terminal' -ForegroundColor White
-    Write-Host ' [16]  7-Zip' -ForegroundColor White
-    Write-Host '-- Batch --' -ForegroundColor DarkGray
-    Write-Host ' [17]  Install ALL Dev Tools (12-16 at once)' -ForegroundColor White
-    Write-Host ' [18]  Install ALL Gaming Launchers (10-11 at once)' -ForegroundColor White
-    Write-Host ''
-    Write-Host '  [0]  Back to Main Menu' -ForegroundColor DarkGray
-    Write-Host '=============================='
-    Write-Host ''
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '   INSTALL APPS' 'Accent'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '-- Music and Social --' 'Muted'
+    Write-ThemedHost '  [1]  Spotify' 'Foreground'
+    Write-ThemedHost '  [2]  BetterDiscord' 'Foreground'
+    Write-ThemedHost '  [3]  Vencord' 'Foreground'
+    Write-ThemedHost '-- Remote and Network --' 'Muted'
+    Write-ThemedHost '  [4]  AweSun Remote Desktop' 'Foreground'
+    Write-ThemedHost '  [5]  OFF Helper (Phone-to-PC shutdown)' 'Foreground'
+    Write-ThemedHost '  [6]  LANDrop' 'Foreground'
+    Write-ThemedHost '-- Browsers --' 'Muted'
+    Write-ThemedHost '  [7]  Firefox' 'Foreground'
+    Write-ThemedHost '  [8]  Brave' 'Foreground'
+    Write-ThemedHost '  [9]  Google Chrome' 'Foreground'
+    Write-ThemedHost '-- Gaming --' 'Muted'
+    Write-ThemedHost ' [10]  Steam' 'Foreground'
+    Write-ThemedHost ' [11]  Epic Games Launcher' 'Foreground'
+    Write-ThemedHost '-- Dev Tools --' 'Muted'
+    Write-ThemedHost ' [12]  Git' 'Foreground'
+    Write-ThemedHost ' [13]  VS Code' 'Foreground'
+    Write-ThemedHost ' [14]  Node.js LTS' 'Foreground'
+    Write-ThemedHost ' [15]  Windows Terminal' 'Foreground'
+    Write-ThemedHost ' [16]  7-Zip' 'Foreground'
+    Write-ThemedHost '-- Batch --' 'Muted'
+    Write-ThemedHost ' [17]  Install ALL Dev Tools (12-16 at once)' 'Foreground'
+    Write-ThemedHost ' [18]  Install ALL Gaming Launchers (10-11 at once)' 'Foreground'
+    Write-ThemedHost ''
+    Write-ThemedHost '  [0]  Back to Main Menu' 'Muted'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost ''
 }
 
 function Show-PrivacyMenu {
     Write-Banner
-    Write-Host '=============================='
-    Write-Host '   WINDOWS PRIVACY AND TWEAKS'
-    Write-Host '=============================='
-    Write-Host '  [1]  Disable Telemetry and Data Collection' -ForegroundColor White
-    Write-Host '  [2]  Remove Common Bloatware' -ForegroundColor White
-    Write-Host '  [3]  Disable Windows Ads and Suggestions' -ForegroundColor White
-    Write-Host '  [4]  Disable Bing Search in Start Menu' -ForegroundColor White
-    Write-Host '  [5]  Disable Activity History and Location' -ForegroundColor White
-    Write-Host '  [6]  Disable Cortana' -ForegroundColor White
-    Write-Host '  [7]  Apply ALL Privacy Tweaks (1-6 at once)' -ForegroundColor White
-    Write-Host '  [8]  Restore Windows Defaults (undo tweaks)' -ForegroundColor White
-    Write-Host '  [0]  Back to Main Menu' -ForegroundColor DarkGray
-    Write-Host '=============================='
-    Write-Host ''
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '   WINDOWS PRIVACY AND TWEAKS' 'Accent'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '  [1]  Disable Telemetry and Data Collection' 'Foreground'
+    Write-ThemedHost '  [2]  Remove Common Bloatware' 'Foreground'
+    Write-ThemedHost '  [3]  Disable Windows Ads and Suggestions' 'Foreground'
+    Write-ThemedHost '  [4]  Disable Bing Search in Start Menu' 'Foreground'
+    Write-ThemedHost '  [5]  Disable Activity History and Location' 'Foreground'
+    Write-ThemedHost '  [6]  Disable Cortana' 'Foreground'
+    Write-ThemedHost '  [7]  Apply ALL Privacy Tweaks (1-6 at once)' 'Foreground'
+    Write-ThemedHost '  [8]  Restore Windows Defaults (undo tweaks)' 'Foreground'
+    Write-ThemedHost '  [0]  Back to Main Menu' 'Muted'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost ''
 }
 
 function Show-PowerMenu {
     Write-Banner
-    Write-Host '=============================='
-    Write-Host '   POWER AND SLEEP TOOLS'
-    Write-Host '=============================='
-    Write-Host '  [1]  Set Shutdown Timer' -ForegroundColor White
-    Write-Host '  [2]  Set Sleep Timer' -ForegroundColor White
-    Write-Host '  [3]  Cancel Any Active Timer' -ForegroundColor White
-    Write-Host '  [4]  Switch Power Plan' -ForegroundColor White
-    Write-Host '  [5]  Show Current Power Plan' -ForegroundColor White
-    Write-Host '  [0]  Back to Main Menu' -ForegroundColor DarkGray
-    Write-Host '=============================='
-    Write-Host ''
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '   POWER AND SLEEP TOOLS' 'Accent'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '  [1]  Set Shutdown Timer' 'Foreground'
+    Write-ThemedHost '  [2]  Set Sleep Timer' 'Foreground'
+    Write-ThemedHost '  [3]  Cancel Any Active Timer' 'Foreground'
+    Write-ThemedHost '  [4]  Switch Power Plan' 'Foreground'
+    Write-ThemedHost '  [5]  Show Current Power Plan' 'Foreground'
+    Write-ThemedHost '  [0]  Back to Main Menu' 'Muted'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost ''
 }
 
 function Show-UtilitiesMenu {
     Write-Banner
-    Write-Host '=============================='
-    Write-Host '   UTILITIES'
-    Write-Host '=============================='
-    Write-Host '  [1]  Run Chris Titus Tech Win Script' -ForegroundColor White
-    Write-Host '  [2]  Open Ninite Website' -ForegroundColor White
-    Write-Host '  [3]  Update All Installed Apps (winget upgrade --all)' -ForegroundColor White
-    Write-Host '  [4]  Check Script Version / Open GitHub' -ForegroundColor White
-    Write-Host '  [5]  View Session Log' -ForegroundColor White
-    Write-Host '  [0]  Back to Main Menu' -ForegroundColor DarkGray
-    Write-Host '=============================='
-    Write-Host ''
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '   UTILITIES' 'Accent'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost '  [1]  Run Chris Titus Tech Win Script' 'Foreground'
+    Write-ThemedHost '  [2]  Open Ninite Website' 'Foreground'
+    Write-ThemedHost '  [3]  Update All Installed Apps (winget upgrade --all)' 'Foreground'
+    Write-ThemedHost '  [4]  Check Script Version / Open GitHub' 'Foreground'
+    Write-ThemedHost '  [5]  View Session Log' 'Foreground'
+    Write-ThemedHost '  [0]  Back to Main Menu' 'Muted'
+    Write-ThemedHost '==============================' 'Border'
+    Write-ThemedHost ''
 }
 
 #endregion Menus
@@ -1191,7 +1337,12 @@ function Install-Firefox {
 
 function Install-Brave {
     Write-Banner
-    $null = Install-WithWinget -Id 'Brave.Brave' -Name 'Brave' -FallbackUrl 'https://brave.com/download/'
+    if (Test-CommandAvailable 'winget') {
+        Invoke-External -Label 'Verifying Brave winget package ID' -Action {
+            & winget show BraveSoftware.Brave --accept-source-agreements
+        } | Out-Null
+    }
+    $null = Install-WithWinget -Id 'BraveSoftware.Brave' -Name 'Brave' -FallbackUrl 'https://laptop-updates.brave.com/download/BRV010?bitness=64'
     Prompt-DefaultBrowser
     Pause-Script
 }
@@ -1285,6 +1436,422 @@ function Install-AllGamingLaunchers {
 }
 
 #endregion App Installers
+
+#region App and Repo Installer
+
+<#
+NO STALE VERSION RULE FOR THIS MODULE
+- Do not hardcode pinned app versions, tag names, dated files, or versioned download links.
+- Prefer winget package IDs with no version argument so winget resolves the current release.
+- For GitHub-hosted installers, only use the permanent /releases/latest/download/<asset> redirect.
+- If a vendor does not expose a direct latest download, open the provided permanent download page instead.
+#>
+
+function Get-AppRepoInstallItems {
+    return @(
+        @{ Key = 'budget'; Name = 'Budget (packaged app)'; Type = 'BudgetApp'; Notes = 'Resolves the latest Budget Windows installer from GitHub Releases at install time.' }
+        @{ Key = 'brave'; Name = 'Brave Browser'; Type = 'Winget'; Id = 'BraveSoftware.Brave'; FallbackUrl = 'https://laptop-updates.brave.com/download/BRV010?bitness=64'; Notes = 'Verifies winget package ID before install; uses Brave stable endpoint only if winget cannot install.' }
+        @{ Key = 'teams'; Name = 'Microsoft Teams'; Type = 'Winget'; Id = 'Microsoft.Teams'; Notes = 'Installs latest available Teams package from winget.' }
+        @{ Key = 'vencord'; Name = 'Vencord'; Type = 'GitHubExe'; Url = 'https://github.com/Vencord/Installer/releases/latest/download/VencordInstaller.exe'; FileName = 'VencordInstaller.exe'; Notes = 'Downloads latest GUI installer, launches it, then removes the temp exe after it exits.' }
+        @{ Key = 'betterdiscord'; Name = 'BetterDiscord'; Type = 'BetterDiscord'; Url = 'https://github.com/BetterDiscord/Installer/releases/latest/download/BetterDiscord-Windows.exe'; FileName = 'BetterDiscord-Windows.exe'; Notes = 'Closes Discord first, then runs the latest installer silently with /S.' }
+        @{ Key = 'insta360'; Name = 'Insta360 Link2 Pro'; Type = 'BrowserPage'; Url = 'https://www.insta360.com/download/insta360-link2pro'; Notes = 'Opens vendor download page; this one requires a manual download click.' }
+    )
+}
+
+function Get-AppRepoRepos {
+    return @(
+        @{ Name = 'SulimanZ-Dev/Budget'; Url = 'https://github.com/SulimanZ-Dev/Budget.git'; SupportsPackagedApp = $true; Notes = 'Choose clone source or install latest packaged app after selecting.' }
+        @{ Name = 'SulimanZ-Dev/NewSetupHelper'; Url = 'https://github.com/SulimanZ-Dev/NewSetupHelper.git' }
+        @{ Name = 'SulimanZ-Dev/SalaryCalculatorLager'; Url = 'https://github.com/SulimanZ-Dev/SalaryCalculatorLager.git' }
+    )
+}
+
+function Select-ChecklistItems {
+    param(
+        [array]$Items,
+        [string]$Title,
+        [string]$NameProperty = 'Name'
+    )
+
+    Write-Banner
+    Write-ThemedHost "  $Title" 'Accent'
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    for ($i = 0; $i -lt $Items.Count; $i++) {
+        Write-ThemedHost ("  [{0}] {1}" -f ($i + 1), $Items[$i].$NameProperty) 'Foreground'
+        if ($Items[$i].Notes) {
+            Write-ThemedHost ("      {0}" -f $Items[$i].Notes) 'Muted'
+        }
+    }
+    Write-ThemedHost ''
+    Write-ThemedHost '  Enter numbers separated by commas, or type all.' 'Muted'
+    $raw = Read-MenuChoice -Prompt 'Select'
+
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+    if ($raw -match '^(?i)all$') { return @($Items) }
+
+    $selected = New-Object System.Collections.Generic.List[object]
+    foreach ($part in ($raw -split ',')) {
+        $index = 0
+        if ([int]::TryParse($part.Trim(), [ref]$index) -and $index -ge 1 -and $index -le $Items.Count) {
+            $item = $Items[$index - 1]
+            if (-not $selected.Contains($item)) { $selected.Add($item) }
+        }
+        else {
+            Write-ThemedHost "  Ignored invalid selection: $part" 'Warning'
+        }
+    }
+
+    return $selected.ToArray()
+}
+
+function Invoke-WingetLatestInstall {
+    param(
+        [string]$Id,
+        [string]$Name,
+        [string]$FallbackUrl = '',
+        [switch]$VerifyFirst
+    )
+
+    if (-not (Test-CommandAvailable 'winget')) {
+        Write-ThemedHost "  winget not found. Cannot install $Name via winget." 'Error'
+        if ($FallbackUrl) {
+            Write-ThemedHost "  Opening fallback URL for $Name." 'Warning'
+            return (Open-BrowserFallback -Url $FallbackUrl -AppName $Name)
+        }
+        return $false
+    }
+
+    if ($VerifyFirst) {
+        $shown = Invoke-External -Label "Verifying winget ID $Id" -Action {
+            & winget show $Id --accept-source-agreements
+        }
+        if (-not $shown -and $FallbackUrl) {
+            Write-ThemedHost "  Package ID verification failed for $Name; opening fallback URL." 'Warning'
+            return (Open-BrowserFallback -Url $FallbackUrl -AppName $Name)
+        }
+        elseif (-not $shown) {
+            return $false
+        }
+    }
+
+    return (Invoke-External -Label "Installing $Name via winget ($Id)" -Action {
+        & winget install $Id --silent --accept-package-agreements --accept-source-agreements
+    })
+}
+
+function Invoke-DownloadedInstaller {
+    param(
+        [string]$Url,
+        [string]$FileName,
+        [string]$Name,
+        [string[]]$ArgumentList = @(),
+        [switch]$Wait
+    )
+
+    $installer = Join-Path $env:TEMP $FileName
+    try {
+        Write-ThemedHost "  Downloading $Name from $Url" 'Warning'
+        Invoke-WebRequest -Uri $Url -OutFile $installer -UseBasicParsing -ErrorAction Stop
+        $processArgs = @{
+            FilePath = $installer
+        }
+        if ($ArgumentList.Count -gt 0) { $processArgs.ArgumentList = $ArgumentList }
+        if ($Wait) { $processArgs.Wait = $true }
+        Start-Process @processArgs
+        Write-ThemedHost "  $Name installer completed/launched." 'Success'
+        return $true
+    }
+    catch {
+        Write-ThemedHost "  $Name failed: $($_.Exception.Message)" 'Error'
+        Write-Log -Message "$Name installer failed: $($_.Exception.Message)" -Level 'ERROR'
+        return $false
+    }
+    finally {
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Resolve-BudgetReleaseInstallerAsset {
+    <#
+    Budget does not have a confirmed stable release asset filename. Unlike Vencord and BetterDiscord,
+    do not replace this with a guessed /latest/download/<filename> URL. Resolve the latest release via
+    GitHub's API and use the browser_download_url returned for the current .exe asset.
+    #>
+    $apiUrl = 'https://api.github.com/repos/SulimanZ-Dev/Budget/releases/latest'
+
+    try {
+        $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'Spicetify-PC-Setup-Helper' } -ErrorAction Stop
+        if (-not $release.assets) {
+            throw 'latest release has no assets'
+        }
+
+        $exeAssets = @($release.assets | Where-Object { $_.name -match '\.exe$' })
+        if ($exeAssets.Count -eq 0) {
+            throw 'latest release has no .exe asset'
+        }
+
+        $preferred = @($exeAssets | Where-Object { $_.name -match '(?i)(setup|install)' } | Select-Object -First 1)
+        if ($preferred.Count -gt 0) {
+            return $preferred[0]
+        }
+
+        return $exeAssets[0]
+    }
+    catch {
+        throw "Could not resolve latest Budget release: $($_.Exception.Message)"
+    }
+}
+
+function Install-BudgetApp {
+    $asset = $null
+    try {
+        Write-ThemedHost '  Resolving latest Budget release from GitHub...' 'Warning'
+        $asset = Resolve-BudgetReleaseInstallerAsset
+    }
+    catch {
+        Write-ThemedHost "  $($_.Exception.Message)" 'Error'
+        Write-Log -Message $_.Exception.Message -Level 'ERROR'
+        return $false
+    }
+
+    $safeFileName = Split-Path -Leaf $asset.name
+    if ([string]::IsNullOrWhiteSpace($safeFileName)) { $safeFileName = 'BudgetInstaller.exe' }
+    $installer = Join-Path $env:TEMP $safeFileName
+
+    try {
+        Write-ThemedHost "  Downloading Budget installer: $($asset.name)" 'Warning'
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer -UseBasicParsing -ErrorAction Stop
+
+        Write-ThemedHost '  Running Budget installer silently...' 'Warning'
+        $silentProcess = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+        if ($silentProcess.ExitCode -eq 0) {
+            Write-ThemedHost '  Budget installer completed silently.' 'Success'
+            return $true
+        }
+
+        Write-ThemedHost "  Silent install returned exit code $($silentProcess.ExitCode). Launching interactive installer instead." 'Warning'
+        Start-Process -FilePath $installer -Wait
+        Write-ThemedHost '  Budget interactive installer closed.' 'Success'
+        return $true
+    }
+    catch {
+        Write-ThemedHost "  Budget install failed: $($_.Exception.Message)" 'Error'
+        Write-Log -Message "Budget install failed: $($_.Exception.Message)" -Level 'ERROR'
+        return $false
+    }
+    finally {
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-AppRepoAppInstall {
+    param([hashtable]$App)
+
+    switch ($App.Type) {
+        'BudgetApp' {
+            return (Install-BudgetApp)
+        }
+        'Winget' {
+            return (Invoke-WingetLatestInstall -Id $App.Id -Name $App.Name -FallbackUrl $App.FallbackUrl -VerifyFirst:($App.Key -eq 'brave'))
+        }
+        'GitHubExe' {
+            return (Invoke-DownloadedInstaller -Url $App.Url -FileName $App.FileName -Name $App.Name -Wait)
+        }
+        'BetterDiscord' {
+            Get-Process -Name 'Discord' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            return (Invoke-DownloadedInstaller -Url $App.Url -FileName $App.FileName -Name $App.Name -ArgumentList @('/S') -Wait)
+        }
+        'BrowserPage' {
+            # Insta360 does not publish a direct latest installer endpoint, so open the permanent vendor page for manual download.
+            return (Open-BrowserFallback -Url $App.Url -AppName $App.Name)
+        }
+        default {
+            Write-ThemedHost "  Unknown app type for $($App.Name)." 'Error'
+            return $false
+        }
+    }
+}
+
+function Start-AppRepoAppInstaller {
+    $apps = Get-AppRepoInstallItems
+    $selected = @(Select-ChecklistItems -Items $apps -Title 'Select apps to install')
+    if ($selected.Count -eq 0) {
+        Write-ThemedHost '  No apps selected.' 'Warning'
+        Pause-Script
+        return
+    }
+
+    Write-Banner
+    Write-ThemedHost '  INSTALL SUMMARY' 'Accent'
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    foreach ($app in $selected) {
+        Write-ThemedHost "  - $($app.Name)" 'Foreground'
+        Write-ThemedHost "    $($app.Notes)" 'Muted'
+    }
+    Write-ThemedHost ''
+    if (-not (Read-YesNo -Prompt '  Install these apps now?' -DefaultYes $false)) {
+        Write-ThemedHost '  Cancelled. Nothing was installed.' 'Warning'
+        Pause-Script
+        return
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($app in $selected) {
+        Write-ThemedHost ''
+        Write-ThemedHost "  --- $($app.Name) ---" 'Muted'
+        $ok = Invoke-AppRepoAppInstall -App $app
+        $results.Add(@{ Name = $app.Name; Success = $ok })
+    }
+
+    Write-ThemedHost ''
+    Write-ThemedHost '  FINAL APP INSTALL SUMMARY' 'Accent'
+    foreach ($result in $results) {
+        Write-OpResult -Label $result.Name -Success $result.Success
+    }
+    Pause-Script
+}
+
+function Ensure-GitAvailableForClone {
+    if (Test-CommandAvailable 'git') {
+        Invoke-External -Label 'Checking git version' -Action { & git --version } | Out-Null
+        return $true
+    }
+
+    Write-ThemedHost '  git was not found. Git is required before cloning repositories.' 'Error'
+    if (-not (Read-YesNo -Prompt '  Install Git via winget now?' -DefaultYes $true)) {
+        return $false
+    }
+
+    $installed = Invoke-WingetLatestInstall -Id 'Git.Git' -Name 'Git'
+    if (-not $installed) { return $false }
+
+    Write-ThemedHost '  Re-checking git availability...' 'Warning'
+    if (Test-CommandAvailable 'git') {
+        Invoke-External -Label 'Checking git version' -Action { & git --version } | Out-Null
+        return $true
+    }
+
+    Write-ThemedHost '  Git installed, but git is not available in this terminal yet. Open a new terminal and try again.' 'Error'
+    return $false
+}
+
+function Select-BudgetRepoMode {
+    while ($true) {
+        Write-Banner
+        Write-ThemedHost '  Budget install mode' 'Accent'
+        Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+        Write-ThemedHost '  [1] Clone source (git clone)' 'Foreground'
+        Write-ThemedHost '  [2] Install packaged app (latest GitHub Release EXE)' 'Foreground'
+        Write-ThemedHost ''
+
+        switch (Read-MenuChoice -Prompt 'Select mode') {
+            '1' { return 'Clone' }
+            '2' { return 'Install' }
+            default {
+                Write-ThemedHost '  Invalid choice.' 'Error'
+                Pause-Script
+            }
+        }
+    }
+}
+
+function Start-AppRepoRepoClone {
+
+    $repos = Get-AppRepoRepos
+    $selected = @(Select-ChecklistItems -Items $repos -Title 'Select GitHub repo actions')
+    if ($selected.Count -eq 0) {
+        Write-ThemedHost '  No repos selected.' 'Warning'
+        Pause-Script
+        return
+    }
+
+    $actions = New-Object System.Collections.Generic.List[object]
+    foreach ($repo in $selected) {
+        if ($repo.SupportsPackagedApp) {
+            $mode = Select-BudgetRepoMode
+            if ($mode -eq 'Install') {
+                $actions.Add(@{
+                    Type = 'BudgetApp'
+                    Name = 'SulimanZ-Dev/Budget (packaged app)'
+                    Detail = 'Will download and install the latest Budget release from GitHub.'
+                })
+            }
+            else {
+                $actions.Add(@{
+                    Type = 'Clone'
+                    Name = $repo.Name
+                    Url = $repo.Url
+                    Detail = "Will clone $($repo.Url)."
+                })
+            }
+        }
+        else {
+            $actions.Add(@{
+                Type = 'Clone'
+                Name = $repo.Name
+                Url = $repo.Url
+                Detail = "Will clone $($repo.Url)."
+            })
+        }
+    }
+
+    $cloneActions = @($actions | Where-Object { $_.Type -eq 'Clone' })
+    $dest = ''
+    if ($cloneActions.Count -gt 0) {
+        if (-not (Ensure-GitAvailableForClone)) {
+            Pause-Script
+            return
+        }
+
+        $defaultDest = Join-Path $HOME 'Source'
+        $dest = Read-Host "  Destination folder [$defaultDest]"
+        if ([string]::IsNullOrWhiteSpace($dest)) { $dest = $defaultDest }
+        $dest = [Environment]::ExpandEnvironmentVariables($dest)
+    }
+
+    Write-Banner
+    Write-ThemedHost '  REPO ACTION SUMMARY' 'Accent'
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    if ($cloneActions.Count -gt 0) {
+        Write-ThemedHost "  Clone destination: $dest" 'Foreground'
+    }
+    foreach ($action in $actions) {
+        Write-ThemedHost "  - $($action.Name)" 'Foreground'
+        Write-ThemedHost "    $($action.Detail)" 'Muted'
+    }
+    Write-ThemedHost ''
+    if (-not (Read-YesNo -Prompt '  Run these repo actions now?' -DefaultYes $false)) {
+        Write-ThemedHost '  Cancelled. Nothing was cloned or installed.' 'Warning'
+        Pause-Script
+        return
+    }
+
+    if ($cloneActions.Count -gt 0) {
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($action in $actions) {
+        if ($action.Type -eq 'BudgetApp') {
+            $ok = Install-BudgetApp
+        }
+        else {
+            $ok = Invoke-External -Label "Cloning $($action.Name)" -Action {
+                & git -C $dest clone $($action.Url)
+            }
+        }
+        $results.Add(@{ Name = $action.Name; Success = $ok })
+    }
+
+    Write-ThemedHost ''
+    Write-ThemedHost '  FINAL REPO ACTION SUMMARY' 'Accent'
+    foreach ($result in $results) {
+        Write-OpResult -Label $result.Name -Success $result.Success
+    }
+    Pause-Script
+}
+
+#endregion App and Repo Installer
 
 #region Privacy Tweaks
 
@@ -1867,6 +2434,23 @@ function Enter-AppsMenu {
     }
 }
 
+function Enter-AppRepoInstallerMenu {
+    $stay = $true
+    while ($stay -and $script:running) {
+        Show-AppRepoInstallerMenu
+        switch (Read-MenuChoice) {
+            '1' { Start-AppRepoAppInstaller }
+            '2' { Start-AppRepoRepoClone }
+            '3' { Select-Theme }
+            '0' { $stay = $false }
+            default {
+                Write-ThemedHost '  Invalid choice.' 'Error'
+                Pause-Script
+            }
+        }
+    }
+}
+
 function Enter-PrivacyMenu {
     $stay = $true
     while ($stay -and $script:running) {
@@ -1931,6 +2515,11 @@ function Enter-UtilitiesMenu {
 
 #region Main
 
+$themeLoaded = Load-ThemeConfig
+if (-not $themeLoaded) {
+    Select-Theme -FirstRun
+}
+
 while ($script:running) {
     Show-MainMenu
     switch (Read-MenuChoice) {
@@ -1938,20 +2527,22 @@ while ($script:running) {
         '2' { Show-SystemStatus }
         '3' { Enter-SpicetifyMenu }
         '4' { Enter-AppsMenu }
-        '5' { Enter-PrivacyMenu }
-        '6' { Enter-PowerMenu }
-        '7' { Enter-UtilitiesMenu }
+        '5' { Enter-AppRepoInstallerMenu }
+        '6' { Enter-PrivacyMenu }
+        '7' { Enter-PowerMenu }
+        '8' { Enter-UtilitiesMenu }
+        '9' { Select-Theme }
         '0' { $script:running = $false }
         default {
-            Write-Host '  Invalid choice.' -ForegroundColor Red
+            Write-ThemedHost '  Invalid choice.' 'Error'
             Pause-Script
         }
     }
 }
 
 Write-Banner
-Write-Host '  See you next time.' -ForegroundColor Cyan
-Write-Host ''
+Write-ThemedHost '  See you next time.' 'Accent'
+Write-ThemedHost ''
 Write-Log -Message 'Session ended'
 
 #endregion Main
