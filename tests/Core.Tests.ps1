@@ -8,23 +8,23 @@ Describe 'Suliman App Hub Core' {
     Context 'Catalog' {
         It 'loads built-in apps, repositories, and profiles' {
             $catalog = Get-SahCatalog
-            @($catalog.apps).Count | Should BeGreaterThan 15
-            @($catalog.repositories).Count | Should Be 5
-            @($catalog.profiles).Count | Should Be 5
+            if (@($catalog.apps).Count -le 15) { throw 'Expected more than 15 built-in apps.' }
+            if (@($catalog.repositories).Count -ne 5) { throw 'Expected 5 built-in repositories.' }
+            if (@($catalog.profiles).Count -ne 5) { throw 'Expected 5 built-in profiles.' }
         }
 
         It 'contains the three Suliman release apps' {
             $ids = @((Get-SahCatalog).apps | ForEach-Object { $_.id })
-            ($ids -contains 'budget') | Should Be $true
-            ($ids -contains 'livssystem') | Should Be $true
-            ($ids -contains 'vault') | Should Be $true
+            if ($ids -notcontains 'budget') { throw 'Budget is missing from the catalog.' }
+            if ($ids -notcontains 'livssystem') { throw 'Livssystem is missing from the catalog.' }
+            if ($ids -notcontains 'vault') { throw 'Vault is missing from the catalog.' }
         }
 
         It 'returns the expected development profile' {
             $ids = @(Get-SahProfileApps -ProfileId 'development' | ForEach-Object { $_.id })
-            ($ids -contains 'git') | Should Be $true
-            ($ids -contains 'vscode') | Should Be $true
-            ($ids -contains 'nodejs') | Should Be $true
+            if ($ids -notcontains 'git') { throw 'Git is missing from the development profile.' }
+            if ($ids -notcontains 'vscode') { throw 'VS Code is missing from the development profile.' }
+            if ($ids -notcontains 'nodejs') { throw 'Node.js is missing from the development profile.' }
         }
     }
 
@@ -40,32 +40,32 @@ Describe 'Suliman App Hub Core' {
                 )
             }
             $asset = Select-SahReleaseAsset -Release $release
-            $asset.name | Should Be 'App_9.9.9_x64-setup.exe'
+            if ($asset.name -ne 'App_9.9.9_x64-setup.exe') { throw "Unexpected release asset: $($asset.name)" }
         }
 
         It 'accepts only trusted HTTPS GitHub release URLs' {
-            Test-SahTrustedGitHubUrl -Url 'https://github.com/owner/repo/releases/download/v1/app.exe' -Repository 'owner/repo' | Should Be $true
-            Test-SahTrustedGitHubUrl -Url 'http://github.com/owner/repo/releases/download/v1/app.exe' -Repository 'owner/repo' | Should Be $false
-            Test-SahTrustedGitHubUrl -Url 'https://example.com/app.exe' -Repository 'owner/repo' | Should Be $false
+            if (-not (Test-SahTrustedGitHubUrl -Url 'https://github.com/owner/repo/releases/download/v1/app.exe' -Repository 'owner/repo')) { throw 'A valid GitHub release URL was rejected.' }
+            if (Test-SahTrustedGitHubUrl -Url 'http://github.com/owner/repo/releases/download/v1/app.exe' -Repository 'owner/repo') { throw 'An insecure GitHub URL was accepted.' }
+            if (Test-SahTrustedGitHubUrl -Url 'https://example.com/app.exe' -Repository 'owner/repo') { throw 'A non-GitHub URL was accepted.' }
         }
 
         It 'handles releases without checksum assets' {
             $release = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'app.exe' }) }
-            Get-SahChecksumAsset -Release $release | Should BeNullOrEmpty
+            if ($null -ne (Get-SahChecksumAsset -Release $release)) { throw 'Unexpected checksum asset returned.' }
         }
     }
 
     Context 'Configuration and history' {
         It 'creates a valid default configuration' {
             $config = Get-SahConfig
-            $config.language | Should Be 'sv'
-            $config.verifyChecksums | Should Be $true
+            if ($config.language -ne 'sv') { throw "Unexpected default language: $($config.language)" }
+            if (-not $config.verifyChecksums) { throw 'Checksum verification should be enabled by default.' }
         }
 
         It 'records an operation with a troubleshooting id' {
             $record = Add-SahHistory -Action 'Test' -Target 'Core' -Success $true
-            $record.operationId.Length | Should Be 10
-            @(Get-SahHistory).Count | Should BeGreaterThan 0
+            if ($record.operationId.Length -ne 10) { throw 'The troubleshooting id should contain 10 characters.' }
+            if (@(Get-SahHistory).Count -le 0) { throw 'The history record was not persisted.' }
         }
     }
 
