@@ -48,6 +48,13 @@ One menu for apps you commonly reinstall, grouped by category:
 
 Batch options install all dev tools or all gaming launchers at once. Every winget install falls back to the official download page if winget fails.
 
+### App & Repo Installer
+
+- Install commonly used apps from winget or their latest official release
+- Clone selected GitHub repositories into a chosen source folder
+- Choose a latest packaged release or the full source repository for Budget, personlig-livsplanerare, and Vault
+- Resolve release EXE assets dynamically without pinned version numbers
+
 ### Windows Privacy and Tweaks
 
 Optional privacy-focused changes (registry and services):
@@ -96,8 +103,8 @@ HKLM changes require running as Administrator.
 Clone or download this repo:
 
 ```powershell
-git clone https://github.com/Wooting2HEEHEE/spicetify-pc-setup-helper.git
-cd spicetify-pc-setup-helper
+git clone https://github.com/SulimanZ-Dev/NewSetupHelper.git
+cd NewSetupHelper
 ```
 
 ### 2. Run
@@ -126,9 +133,11 @@ If Windows blocks the script, right-click the file → **Properties** → check 
  [2] System Status Check
  [3] Spicetify Tools     -->
  [4] Install Apps        -->
- [5] Windows Privacy     -->
- [6] Power and Sleep     -->
- [7] Utilities           -->
+ [5] App & Repo Installer -->
+ [6] Windows Privacy     -->
+ [7] Power and Sleep     -->
+ [8] Utilities           -->
+ [9] Settings / Theme
  [0] Exit
 ========================================
 ```
@@ -172,7 +181,7 @@ View it from **Utilities → [5] View Session Log**.
 
 ## Version
 
-Current script version: **v2.0** (see `$ScriptVersion` at the top of `spicetify-app.ps1`).
+Current script version: **v2.1** (see `$ScriptVersion` at the top of `spicetify-app.ps1`).
 
 ---
 

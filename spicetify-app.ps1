@@ -1,8 +1,8 @@
 # spicetify-app.ps1 - PC Setup and Spicetify Helper
 # Personal toolkit for Spicetify, app installs, and new-PC setup.
 
-$ScriptVersion = '2.0'
-$ScriptGitHubUrl = 'https://github.com/Wooting2HEEHEE/spicetify-pc-setup-helper'
+$ScriptVersion = '2.1'
+$ScriptGitHubUrl = 'https://github.com/SulimanZ-Dev/NewSetupHelper'
 $ErrorActionPreference = 'Continue'
 $script:running = $true
 $script:SleepTimerJobName = 'SpicetifyHelperSleepTimer'
@@ -1460,7 +1460,9 @@ function Get-AppRepoInstallItems {
 
 function Get-AppRepoRepos {
     return @(
-        @{ Name = 'SulimanZ-Dev/Budget'; Url = 'https://github.com/SulimanZ-Dev/Budget.git'; SupportsPackagedApp = $true; Notes = 'Choose clone source or install latest packaged app after selecting.' }
+        @{ Name = 'SulimanZ-Dev/Budget'; Url = 'https://github.com/SulimanZ-Dev/Budget.git'; ReleaseRepo = 'SulimanZ-Dev/Budget'; ReleaseMode = 'Install'; Notes = 'Choose the latest packaged release or clone the full source repository.' }
+        @{ Name = 'SulimanZ-Dev/personlig-livsplanerare'; Url = 'https://github.com/SulimanZ-Dev/personlig-livsplanerare.git'; ReleaseRepo = 'SulimanZ-Dev/personlig-livsplanerare'; ReleaseMode = 'Portable'; Notes = 'Choose the latest packaged release or clone the full source repository.' }
+        @{ Name = 'SulimanZ-Dev/Vault'; Url = 'https://github.com/SulimanZ-Dev/Vault.git'; ReleaseRepo = 'SulimanZ-Dev/Vault'; ReleaseMode = 'Install'; Notes = 'Choose the latest packaged release or clone the full source repository.' }
         @{ Name = 'SulimanZ-Dev/NewSetupHelper'; Url = 'https://github.com/SulimanZ-Dev/NewSetupHelper.git' }
         @{ Name = 'SulimanZ-Dev/SalaryCalculatorLager'; Url = 'https://github.com/SulimanZ-Dev/SalaryCalculatorLager.git' }
     )
@@ -1571,13 +1573,21 @@ function Invoke-DownloadedInstaller {
     }
 }
 
-function Resolve-BudgetReleaseInstallerAsset {
+function Resolve-GitHubReleaseExeAsset {
+    param(
+        [string]$Repository,
+        [string]$DisplayName
+    )
+
     <#
-    Budget does not have a confirmed stable release asset filename. Unlike Vencord and BetterDiscord,
-    do not replace this with a guessed /latest/download/<filename> URL. Resolve the latest release via
-    GitHub's API and use the browser_download_url returned for the current .exe asset.
+    These repositories do not share a stable release asset filename. Resolve the latest release via
+    GitHub's API, prefer setup/install assets, and use the browser_download_url returned by GitHub.
     #>
-    $apiUrl = 'https://api.github.com/repos/SulimanZ-Dev/Budget/releases/latest'
+    if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+        throw "Invalid GitHub repository name: $Repository"
+    }
+
+    $apiUrl = "https://api.github.com/repos/$Repository/releases/latest"
 
     try {
         $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'Spicetify-PC-Setup-Helper' } -ErrorAction Stop
@@ -1592,21 +1602,35 @@ function Resolve-BudgetReleaseInstallerAsset {
 
         $preferred = @($exeAssets | Where-Object { $_.name -match '(?i)(setup|install)' } | Select-Object -First 1)
         if ($preferred.Count -gt 0) {
-            return $preferred[0]
+            $asset = $preferred[0]
+        }
+        else {
+            $asset = $exeAssets[0]
         }
 
-        return $exeAssets[0]
+        return @{
+            Name = $asset.name
+            Url = $asset.browser_download_url
+            Tag = $release.tag_name
+        }
     }
     catch {
-        throw "Could not resolve latest Budget release: $($_.Exception.Message)"
+        throw "Could not resolve the latest $DisplayName release: $($_.Exception.Message)"
     }
 }
 
-function Install-BudgetApp {
+function Invoke-GitHubReleaseExe {
+    param(
+        [string]$Repository,
+        [string]$DisplayName,
+        [ValidateSet('Install', 'Portable')]
+        [string]$Mode = 'Install'
+    )
+
     $asset = $null
     try {
-        Write-ThemedHost '  Resolving latest Budget release from GitHub...' 'Warning'
-        $asset = Resolve-BudgetReleaseInstallerAsset
+        Write-ThemedHost "  Resolving latest $DisplayName release from GitHub..." 'Warning'
+        $asset = Resolve-GitHubReleaseExeAsset -Repository $Repository -DisplayName $DisplayName
     }
     catch {
         Write-ThemedHost "  $($_.Exception.Message)" 'Error'
@@ -1614,34 +1638,60 @@ function Install-BudgetApp {
         return $false
     }
 
-    $safeFileName = Split-Path -Leaf $asset.name
-    if ([string]::IsNullOrWhiteSpace($safeFileName)) { $safeFileName = 'BudgetInstaller.exe' }
-    $installer = Join-Path $env:TEMP $safeFileName
+    $safeFileName = Split-Path -Leaf $asset.Name
+    if ([string]::IsNullOrWhiteSpace($safeFileName)) { $safeFileName = 'GitHubRelease.exe' }
+
+    if ($Mode -eq 'Portable') {
+        $downloadDirectory = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+        $downloadPath = Join-Path $downloadDirectory $safeFileName
+
+        try {
+            New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+            Write-ThemedHost "  Downloading $DisplayName $($asset.Tag) to $downloadPath" 'Warning'
+            Invoke-WebRequest -Uri $asset.Url -OutFile $downloadPath -UseBasicParsing -ErrorAction Stop
+            Start-Process -FilePath $downloadPath
+            Write-ThemedHost "  $DisplayName was downloaded and launched." 'Success'
+            return $true
+        }
+        catch {
+            Write-ThemedHost "  $DisplayName release download failed: $($_.Exception.Message)" 'Error'
+            Write-Log -Message "$DisplayName release download failed: $($_.Exception.Message)" -Level 'ERROR'
+            return $false
+        }
+    }
+
+    $tempDirectory = Join-Path ([IO.Path]::GetTempPath()) ("NewSetupHelper-" + [Guid]::NewGuid().ToString('N'))
+    $installer = Join-Path $tempDirectory $safeFileName
 
     try {
-        Write-ThemedHost "  Downloading Budget installer: $($asset.name)" 'Warning'
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer -UseBasicParsing -ErrorAction Stop
+        New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
+        Write-ThemedHost "  Downloading $DisplayName installer: $($asset.Name)" 'Warning'
+        Invoke-WebRequest -Uri $asset.Url -OutFile $installer -UseBasicParsing -ErrorAction Stop
 
-        Write-ThemedHost '  Running Budget installer silently...' 'Warning'
+        Write-ThemedHost "  Running $DisplayName installer silently..." 'Warning'
         $silentProcess = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
         if ($silentProcess.ExitCode -eq 0) {
-            Write-ThemedHost '  Budget installer completed silently.' 'Success'
+            Write-ThemedHost "  $DisplayName installer completed silently." 'Success'
             return $true
         }
 
         Write-ThemedHost "  Silent install returned exit code $($silentProcess.ExitCode). Launching interactive installer instead." 'Warning'
         Start-Process -FilePath $installer -Wait
-        Write-ThemedHost '  Budget interactive installer closed.' 'Success'
+        Write-ThemedHost "  $DisplayName interactive installer closed." 'Success'
         return $true
     }
     catch {
-        Write-ThemedHost "  Budget install failed: $($_.Exception.Message)" 'Error'
-        Write-Log -Message "Budget install failed: $($_.Exception.Message)" -Level 'ERROR'
+        Write-ThemedHost "  $DisplayName install failed: $($_.Exception.Message)" 'Error'
+        Write-Log -Message "$DisplayName install failed: $($_.Exception.Message)" -Level 'ERROR'
         return $false
     }
     finally {
-        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tempDirectory -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Install-BudgetApp {
+    return (Invoke-GitHubReleaseExe -Repository 'SulimanZ-Dev/Budget' -DisplayName 'Budget' -Mode 'Install')
 }
 
 function Invoke-AppRepoAppInstall {
@@ -1735,18 +1785,25 @@ function Ensure-GitAvailableForClone {
     return $false
 }
 
-function Select-BudgetRepoMode {
+function Select-GitHubRepoMode {
+    param([hashtable]$Repo)
+
     while ($true) {
         Write-Banner
-        Write-ThemedHost '  Budget install mode' 'Accent'
+        Write-ThemedHost "  $($Repo.Name) download mode" 'Accent'
         Write-ThemedHost '  -----------------------------------------------------' 'Muted'
-        Write-ThemedHost '  [1] Clone source (git clone)' 'Foreground'
-        Write-ThemedHost '  [2] Install packaged app (latest GitHub Release EXE)' 'Foreground'
+        Write-ThemedHost '  [1] Download full repository (git clone)' 'Foreground'
+        if ($Repo.ReleaseMode -eq 'Portable') {
+            Write-ThemedHost '  [2] Download packaged app (latest GitHub Release EXE)' 'Foreground'
+        }
+        else {
+            Write-ThemedHost '  [2] Install packaged app (latest GitHub Release EXE)' 'Foreground'
+        }
         Write-ThemedHost ''
 
         switch (Read-MenuChoice -Prompt 'Select mode') {
             '1' { return 'Clone' }
-            '2' { return 'Install' }
+            '2' { return 'Release' }
             default {
                 Write-ThemedHost '  Invalid choice.' 'Error'
                 Pause-Script
@@ -1767,13 +1824,17 @@ function Start-AppRepoRepoClone {
 
     $actions = New-Object System.Collections.Generic.List[object]
     foreach ($repo in $selected) {
-        if ($repo.SupportsPackagedApp) {
-            $mode = Select-BudgetRepoMode
-            if ($mode -eq 'Install') {
+        if ($repo.ReleaseRepo) {
+            $mode = Select-GitHubRepoMode -Repo $repo
+            if ($mode -eq 'Release') {
+                $releaseVerb = if ($repo.ReleaseMode -eq 'Portable') { 'download and launch' } else { 'download and install' }
                 $actions.Add(@{
-                    Type = 'BudgetApp'
-                    Name = 'SulimanZ-Dev/Budget (packaged app)'
-                    Detail = 'Will download and install the latest Budget release from GitHub.'
+                    Type = 'ReleaseExe'
+                    Name = "$($repo.Name) (packaged app)"
+                    Repository = $repo.ReleaseRepo
+                    DisplayName = ($repo.Name -split '/')[-1]
+                    ReleaseMode = $repo.ReleaseMode
+                    Detail = "Will $releaseVerb the latest release EXE from GitHub."
                 })
             }
             else {
@@ -1832,8 +1893,8 @@ function Start-AppRepoRepoClone {
 
     $results = New-Object System.Collections.Generic.List[object]
     foreach ($action in $actions) {
-        if ($action.Type -eq 'BudgetApp') {
-            $ok = Install-BudgetApp
+        if ($action.Type -eq 'ReleaseExe') {
+            $ok = Invoke-GitHubReleaseExe -Repository $action.Repository -DisplayName $action.DisplayName -Mode $action.ReleaseMode
         }
         else {
             $ok = Invoke-External -Label "Cloning $($action.Name)" -Action {
