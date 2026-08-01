@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "language": "sv",
+  "theme": "Dark",
+  "autoCheckUpdates": true,
+  "sourceRoot": "%USERPROFILE%\\Source",
+  "portableInstallRoot": "%LOCALAPPDATA%\\Programs\\SulimanAppHub",
+  "createRestorePoint": true,
+  "verifyChecksums": true,
+  "customApps": [
+    {
+      "id": "example-winget-app",
+      "name": "Example Winget App",
+      "kind": "Winget",
+      "packageId": "Publisher.Package",
+      "category": "Custom",
+      "profiles": []
+    }
+  ],
+  "customRepositories": [
+    {
+      "name": "Example repository",
+      "repository": "owner/repository",
+      "url": "https://github.com/owner/repository.git"
+    }
+  ],
+  "customProfiles": []
+}

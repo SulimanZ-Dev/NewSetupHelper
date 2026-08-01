@@ -1,13 +1,21 @@
 # spicetify-app.ps1 - PC Setup and Spicetify Helper
 # Personal toolkit for Spicetify, app installs, and new-PC setup.
 
-$ScriptVersion = '2.1'
+$ScriptVersion = '3.0'
 $ScriptGitHubUrl = 'https://github.com/SulimanZ-Dev/NewSetupHelper'
 $ErrorActionPreference = 'Continue'
 $script:running = $true
 $script:SleepTimerJobName = 'SpicetifyHelperSleepTimer'
 
-$ScriptDirectory = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$ScriptDirectory = if ($PSScriptRoot) {
+    $PSScriptRoot
+}
+elseif ($MyInvocation.MyCommand.Path) {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+else {
+    [AppDomain]::CurrentDomain.BaseDirectory.TrimEnd('\')
+}
 $ThemeConfigPath = Join-Path $ScriptDirectory 'spicetify-helper-config.json'
 $LogPath = Join-Path $env:TEMP 'spicetify-helper-log.txt'
 $SessionStart = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -526,6 +534,8 @@ function Show-MainMenu {
     Write-ThemedHost '  [7] Power and Sleep     -->' 'Foreground'
     Write-ThemedHost '  [8] Utilities           -->' 'Foreground'
     Write-ThemedHost '  [9] Settings / Theme' 'Foreground'
+    Write-ThemedHost '  [10] Suliman App Hub GUI' 'Foreground'
+    Write-ThemedHost '  [11] Suliman App Hub Terminal -->' 'Foreground'
     Write-ThemedHost '  [0] Exit' 'Muted'
     Write-ThemedHost '========================================' 'Border'
     Write-ThemedHost ''
@@ -2495,6 +2505,36 @@ function Enter-AppsMenu {
     }
 }
 
+function Open-SulimanAppHubGui {
+    $guiExe = Join-Path $ScriptDirectory 'SulimanAppHub.exe'
+    $guiScript = Join-Path $ScriptDirectory 'SulimanAppHub.ps1'
+    if (Test-Path -LiteralPath $guiExe) {
+        Start-Process -FilePath $guiExe
+        return
+    }
+    if (Test-Path -LiteralPath $guiScript) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $guiScript)
+        return
+    }
+    Write-ThemedHost '  Suliman App Hub GUI was not found beside this app.' 'Error'
+    Pause-Script
+}
+
+function Open-SulimanAppHubTerminal {
+    $terminalExe = Join-Path $ScriptDirectory 'SulimanAppHub.Terminal.exe'
+    $terminalScript = Join-Path $ScriptDirectory 'SulimanAppHub.Terminal.ps1'
+    if (Test-Path -LiteralPath $terminalExe) {
+        Start-Process -FilePath $terminalExe -Wait
+        return
+    }
+    if (Test-Path -LiteralPath $terminalScript) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $terminalScript
+        return
+    }
+    Write-ThemedHost '  Suliman App Hub terminal was not found beside this app.' 'Error'
+    Pause-Script
+}
+
 function Enter-AppRepoInstallerMenu {
     $stay = $true
     while ($stay -and $script:running) {
@@ -2593,6 +2633,8 @@ while ($script:running) {
         '7' { Enter-PowerMenu }
         '8' { Enter-UtilitiesMenu }
         '9' { Select-Theme }
+        '10' { Open-SulimanAppHubGui }
+        '11' { Open-SulimanAppHubTerminal }
         '0' { $script:running = $false }
         default {
             Write-ThemedHost '  Invalid choice.' 'Error'

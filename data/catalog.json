@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "helperRepository": "SulimanZ-Dev/NewSetupHelper",
+  "apps": [
+    { "id": "spotify", "name": "Spotify", "kind": "Winget", "packageId": "Spotify.Spotify", "category": "Music", "profiles": ["new-pc", "minimal", "gaming"] },
+    { "id": "brave", "name": "Brave Browser", "kind": "Winget", "packageId": "BraveSoftware.Brave", "category": "Browsers", "profiles": ["new-pc", "minimal", "development"] },
+    { "id": "firefox", "name": "Mozilla Firefox", "kind": "Winget", "packageId": "Mozilla.Firefox", "category": "Browsers", "profiles": ["new-pc", "development"] },
+    { "id": "chrome", "name": "Google Chrome", "kind": "Winget", "packageId": "Google.Chrome", "category": "Browsers", "profiles": ["new-pc"] },
+    { "id": "teams", "name": "Microsoft Teams", "kind": "Winget", "packageId": "Microsoft.Teams", "category": "Communication", "profiles": ["new-pc"] },
+    { "id": "steam", "name": "Steam", "kind": "Winget", "packageId": "Valve.Steam", "category": "Gaming", "profiles": ["gaming"] },
+    { "id": "epic", "name": "Epic Games Launcher", "kind": "Winget", "packageId": "EpicGames.EpicGamesLauncher", "category": "Gaming", "profiles": ["gaming"] },
+    { "id": "git", "name": "Git", "kind": "Winget", "packageId": "Git.Git", "category": "Development", "profiles": ["new-pc", "development"] },
+    { "id": "vscode", "name": "Visual Studio Code", "kind": "Winget", "packageId": "Microsoft.VisualStudioCode", "category": "Development", "profiles": ["development"] },
+    { "id": "nodejs", "name": "Node.js LTS", "kind": "Winget", "packageId": "OpenJS.NodeJS.LTS", "category": "Development", "profiles": ["development"] },
+    { "id": "terminal", "name": "Windows Terminal", "kind": "Winget", "packageId": "Microsoft.WindowsTerminal", "category": "Development", "profiles": ["new-pc", "development"] },
+    { "id": "7zip", "name": "7-Zip", "kind": "Winget", "packageId": "7zip.7zip", "category": "Utilities", "profiles": ["new-pc", "minimal", "development"] },
+    { "id": "budget", "name": "Budget", "kind": "GitHub", "repository": "SulimanZ-Dev/Budget", "assetInclude": ["(?i)\\.exe$"], "assetPrefer": ["(?i)(setup|install)"], "installMode": "Installer", "silentArgs": ["/S"], "uninstallName": "Budget", "category": "Suliman Apps", "profiles": ["new-pc", "suliman"] },
+    { "id": "livssystem", "name": "Personlig livsplanerare", "kind": "GitHub", "repository": "SulimanZ-Dev/personlig-livsplanerare", "assetInclude": ["(?i)\\.exe$"], "installMode": "Portable", "executableName": "livssystem.exe", "category": "Suliman Apps", "profiles": ["new-pc", "suliman"] },
+    { "id": "vault", "name": "Vault", "kind": "GitHub", "repository": "SulimanZ-Dev/Vault", "assetInclude": ["(?i)\\.(exe|msi|msix|msixbundle|zip)$"], "assetPrefer": ["(?i)(setup|install)", "(?i)x64"], "assetExclude": ["(?i)sha256", "(?i)portable"], "installMode": "Installer", "silentArgs": ["/S"], "uninstallName": "Vault", "category": "Suliman Apps", "profiles": ["new-pc", "suliman"] },
+    { "id": "vencord", "name": "Vencord", "kind": "GitHub", "repository": "Vencord/Installer", "assetInclude": ["(?i)VencordInstaller.*\\.exe$"], "installMode": "Installer", "category": "Communication", "profiles": ["gaming"] },
+    { "id": "betterdiscord", "name": "BetterDiscord", "kind": "GitHub", "repository": "BetterDiscord/Installer", "assetInclude": ["(?i)BetterDiscord.*Windows.*\\.exe$"], "installMode": "Installer", "silentArgs": ["/S"], "category": "Communication", "profiles": ["gaming"] }
+  ],
+  "repositories": [
+    { "name": "Budget", "repository": "SulimanZ-Dev/Budget", "url": "https://github.com/SulimanZ-Dev/Budget.git" },
+    { "name": "Personlig livsplanerare", "repository": "SulimanZ-Dev/personlig-livsplanerare", "url": "https://github.com/SulimanZ-Dev/personlig-livsplanerare.git" },
+    { "name": "Vault", "repository": "SulimanZ-Dev/Vault", "url": "https://github.com/SulimanZ-Dev/Vault.git" },
+    { "name": "NewSetupHelper", "repository": "SulimanZ-Dev/NewSetupHelper", "url": "https://github.com/SulimanZ-Dev/NewSetupHelper.git" },
+    { "name": "SalaryCalculatorLager", "repository": "SulimanZ-Dev/SalaryCalculatorLager", "url": "https://github.com/SulimanZ-Dev/SalaryCalculatorLager.git" }
+  ],
+  "profiles": [
+    { "id": "minimal", "nameSv": "Minimal", "nameEn": "Minimal", "descriptionSv": "Webbläsare, Spotify och grundverktyg.", "descriptionEn": "Browser, Spotify, and essential tools." },
+    { "id": "new-pc", "nameSv": "Ny dator", "nameEn": "New PC", "descriptionSv": "En balanserad grundinstallation för en ny Windows-dator.", "descriptionEn": "A balanced baseline for a new Windows PC." },
+    { "id": "gaming", "nameSv": "Gaming", "nameEn": "Gaming", "descriptionSv": "Spelklienter, kommunikation och Spotify.", "descriptionEn": "Game clients, communication, and Spotify." },
+    { "id": "development", "nameSv": "Utveckling", "nameEn": "Development", "descriptionSv": "Git, editor, Node.js, terminal och utvecklarverktyg.", "descriptionEn": "Git, editor, Node.js, terminal, and development tools." },
+    { "id": "suliman", "nameSv": "Mina appar", "nameEn": "My Apps", "descriptionSv": "Budget, Livssystem och Vault från senaste GitHub-releaser.", "descriptionEn": "Budget, Life Planner, and Vault from their latest GitHub releases." }
+  ]
+}

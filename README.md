@@ -1,190 +1,155 @@
-# Spicetify + PC Setup Helper
+# Suliman App Hub + Spicetify PC Setup Helper
 
-A personal PowerShell menu tool for setting up a new Windows PC quickly — with a focus on **Spicetify**, app installs, privacy tweaks, and everyday utilities.
+Suliman App Hub is a Windows app for installing, updating, backing up, and managing apps and GitHub repositories. Version 3 keeps the original PowerShell terminal helper and adds a separate WinForms GUI powered by the same PowerShell core.
 
-No extra dependencies beyond **PowerShell 5.1+** and **winget** (standard on modern Windows 10/11).
+## Editions
 
----
+| File | Purpose |
+|---|---|
+| `SulimanAppHub.exe` | Full Windows GUI with search, tabs, queues, progress, retry, and clear results |
+| `SulimanAppHub.Terminal.exe` | Advanced terminal edition with the same catalog and management engine |
+| `SpicetifySetupHelper.exe` | Original terminal-based Spicetify and PC setup helper, now with App Hub launch options |
 
-## What it does
+The GUI never replaces the terminal version. Both editions remain available in every release.
 
-This script is a one-stop helper when you move to a new machine, use a laptop away from home, or want to reinstall your usual setup without digging through bookmarks and install guides.
+## Main features
 
-### New PC Setup Wizard
+- Install, update, and uninstall winget or GitHub-hosted apps.
+- Resolve current GitHub releases dynamically without pinned versions.
+- Handle EXE, MSI, MSIX, MSIXBundle, ZIP, winget, and portable apps.
+- Prefer setup assets, show release notes, verify published SHA-256 checksums, and inspect Authenticode status.
+- Track installed GitHub versions and compare them with the latest release.
+- Run installation profiles: Minimal, New PC, Gaming, Development, and My Apps.
+- Add custom winget apps, GitHub apps, repositories, and profiles through JSON configuration.
+- Clone repositories and run safe `git pull --ff-only`, open folders, launch VS Code, or run `git fsck` and remote pruning.
+- Export and restore computer profiles containing winget packages, App Hub settings/state/history, repository inventory, Spicetify configuration, privacy settings snapshot, and system information.
+- Compare a backup from another computer with the current machine.
+- Update winget apps, tracked GitHub apps, Spicetify, and the helper from one flow.
+- Keep JSONL installation history, troubleshooting IDs, and a readable log.
+- Diagnose Windows, disk, RAM, drivers, winget, Git, Node.js, PowerShell, and Spicetify.
+- Optional post-install shortcut, taskbar pin, app launch, and Windows app settings actions.
+- Attempt a Windows restore point before larger queues, uninstall operations, and profile restores.
+- Check automatically for new Setup Helper releases and stage a verified self-update.
 
-Walks you through the full chain:
+Taskbar pinning is best effort because current Windows versions may hide that shell action. Digital signing is supported by the build script when a code-signing certificate thumbprint is provided; a certificate is not included in the repository.
 
-1. Install Spotify (winget)
-2. Install Spicetify CLI
-3. Optionally import a saved config ZIP
-4. `backup` + `apply` + enable DevTools
-5. Block Spotify auto-updates
-6. Optionally install Spicetify Marketplace
+## Built-in Suliman apps
 
-### Spicetify Tools
+- [Budget](https://github.com/SulimanZ-Dev/Budget)
+- [Personlig livsplanerare](https://github.com/SulimanZ-Dev/personlig-livsplanerare)
+- [Vault](https://github.com/SulimanZ-Dev/Vault)
 
-Everything you need to manage Spicetify day to day:
+The catalog checks the repositories' latest GitHub releases at runtime, so new releases are discovered without changing the helper source.
 
-- Install / upgrade CLI and Marketplace
-- Apply, restore, restart Spotify
-- Block or unblock Spotify updates
-- Fix Spicetify after a Spotify client update (`backup apply`)
-- Theme picker (numbered list)
-- Extension remover (numbered list, correct `-` suffix)
-- Export / import full config as ZIP (`%AppData%\spicetify`)
-- DevTools, version check, open config folder
+## Run from source
 
-### Install Apps
-
-One menu for apps you commonly reinstall, grouped by category:
-
-| Category | Apps |
-|----------|------|
-| Music and Social | Spotify, BetterDiscord, Vencord |
-| Remote and Network | AweSun, OFF Helper, LANDrop |
-| Browsers | Firefox, Brave, Chrome |
-| Gaming | Steam, Epic Games Launcher |
-| Dev Tools | Git, VS Code, Node.js LTS, Windows Terminal, 7-Zip |
-
-Batch options install all dev tools or all gaming launchers at once. Every winget install falls back to the official download page if winget fails.
-
-### App & Repo Installer
-
-- Install commonly used apps from winget or their latest official release
-- Clone selected GitHub repositories into a chosen source folder
-- Choose a latest packaged release or the full source repository for Budget, personlig-livsplanerare, and Vault
-- Resolve release EXE assets dynamically without pinned version numbers
-
-### Windows Privacy and Tweaks
-
-Optional privacy-focused changes (registry and services):
-
-- Disable telemetry and related services
-- Remove common preinstalled Microsoft apps (bloatware)
-- Disable ads, Start menu suggestions, and tips
-- Disable Bing in Start Menu search
-- Disable activity history and location tracking
-- Disable Cortana
-- Apply all tweaks at once, or restore defaults
-
-HKLM changes require running as Administrator.
-
-### Power and Sleep Tools
-
-- Schedule shutdown or sleep after X minutes
-- Cancel active timers
-- Switch power plan (Balanced, High Performance, Power Saver, Ultimate Performance)
-- Show current active power plan
-
-### Utilities
-
-- Chris Titus WinUtil (with confirmation + admin re-launch)
-- Open Ninite
-- `winget upgrade --all`
-- Script version info + GitHub link
-- View session log in Notepad
-
----
-
-## Requirements
-
-- Windows 10 (1809+) or Windows 11
-- PowerShell 5.1 or newer
-- [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) (for most app installs)
-- Internet access (install scripts download from official sources)
-- **Administrator** — only needed for privacy tweaks (HKLM) and some system utilities
-
----
-
-## Quick start
-
-### 1. Download
-
-Clone or download this repo:
+Windows PowerShell 5.1 or newer is supported.
 
 ```powershell
 git clone https://github.com/SulimanZ-Dev/NewSetupHelper.git
 cd NewSetupHelper
-```
 
-### 2. Run
+# GUI
+powershell -ExecutionPolicy Bypass -File .\SulimanAppHub.ps1
 
-```powershell
+# Advanced terminal edition
+powershell -ExecutionPolicy Bypass -File .\SulimanAppHub.Terminal.ps1
+
+# Original Spicetify terminal helper
 powershell -ExecutionPolicy Bypass -File .\spicetify-app.ps1
 ```
 
-If Windows blocks the script, right-click the file → **Properties** → check **Unblock** (if shown), or run the command above which bypasses execution policy for that session.
+Administrator rights are requested by Windows only when an operation requires them. Browsing the catalog and checking status do not require elevation.
 
-### 3. New PC? Start here
+## Quiet profiles
 
-1. Main menu → **[1] New PC Setup Wizard**
-2. Before leaving your old PC: **Spicetify Tools → [18] Export Config (ZIP)** and save the file to USB or cloud
-3. On the new PC: run the wizard and import that ZIP at step 3
+The terminal edition supports non-interactive profile installation and diagnostics:
 
----
-
-## Main menu
-
-```
-========================================
-   SPICETIFY + PC SETUP HELPER
-========================================
- [1] New PC Setup Wizard
- [2] System Status Check
- [3] Spicetify Tools     -->
- [4] Install Apps        -->
- [5] App & Repo Installer -->
- [6] Windows Privacy     -->
- [7] Power and Sleep     -->
- [8] Utilities           -->
- [9] Settings / Theme
- [0] Exit
-========================================
+```powershell
+.\SulimanAppHub.Terminal.exe -end -Action InstallProfile -Profile development -Quiet
+.\SulimanAppHub.Terminal.exe -end -Action UpdateAll -Quiet
+.\SulimanAppHub.Terminal.exe -end -Action Diagnostics -Quiet
 ```
 
-Every submenu has **[0] Back** to return to the main menu.
+PS2EXE reserves arguments before `-end`; script arguments must follow it.
 
----
+## Custom apps and repositories
 
-## Session log
+The user configuration is created at:
 
-Actions are logged to:
-
-```
-%TEMP%\spicetify-helper-log.txt
+```text
+%LOCALAPPDATA%\SulimanAppHub\hub-config.json
 ```
 
-View it from **Utilities → [5] View Session Log**.
+The GUI opens this file from Settings. `data/hub-config.example.json` documents the shape. Custom winget apps need `kind: "Winget"` and `packageId`. Custom GitHub apps need a trusted `owner/repository`, release asset patterns, and an install mode.
 
----
+Example GitHub app:
 
-## Important notes
+```json
+{
+  "id": "my-app",
+  "name": "My App",
+  "kind": "GitHub",
+  "repository": "owner/repository",
+  "assetInclude": ["(?i)\\.(exe|msi|zip)$"],
+  "assetPrefer": ["(?i)(setup|install)", "(?i)x64"],
+  "installMode": "Installer",
+  "silentArgs": ["/S"],
+  "category": "Custom",
+  "profiles": []
+}
+```
 
-- **Spicetify** modifies the Spotify desktop client. Spotify updates can break Spicetify — use **After Spotify Update** or re-run `backup apply` when that happens.
-- **Chris Titus WinUtil** runs a third-party script from the internet. Only use it if you trust the source.
-- **Privacy tweaks** change registry keys and services. Use **Restore Windows Defaults** in the Privacy menu to undo. Some changes need a restart.
-- **OFF Helper** and **AweSun** are third-party remote/shutdown tools — follow their own setup (e.g. install the OFF app on your phone).
-- This is a **personal helper script**, not an official Spicetify or Spotify product.
+Invalid configuration is preserved with an `.invalid-TIMESTAMP` suffix and replaced by safe defaults.
 
----
+## Data and logs
 
-## File reference
+Runtime data is stored under `%LOCALAPPDATA%\SulimanAppHub`:
 
-| Path | Purpose |
-|------|---------|
-| `spicetify-app.ps1` | Main script |
-| `%AppData%\spicetify\` | Spicetify config (exported/imported by ZIP feature) |
-| `%TEMP%\spicetify-helper-log.txt` | Session log |
-| `%TEMP%\OffHelper\` | OFF Helper extraction folder |
+- `hub-config.json`: settings and custom catalog entries
+- `state.json`: tracked GitHub and portable installations
+- `history.jsonl`: operation history
+- `hub.log`: detailed log with troubleshooting IDs
 
----
+The original terminal helper keeps its session log at `%TEMP%\spicetify-helper-log.txt`.
+
+## Build and test
+
+Run all parser, JSON, and Pester checks:
+
+```powershell
+.\scripts\Test.ps1
+```
+
+Build all three Windows executables, a release ZIP, and SHA-256 checksums:
+
+```powershell
+Install-Module ps2exe -Scope CurrentUser
+.\build.ps1 -Version 3.0.0
+```
+
+Optional Authenticode signing:
+
+```powershell
+.\build.ps1 -Version 3.0.0 -CertificateThumbprint YOUR_CERTIFICATE_THUMBPRINT
+```
+
+GitHub Actions tests and builds every push and pull request. A `v*` tag creates or updates the matching GitHub release and uploads both GUI and terminal executables, the classic helper, the ZIP bundle, and `SHA256SUMS.txt`.
+
+## Safety model
+
+- Install and uninstall queues require explicit confirmation in interactive editions.
+- Repository updates stop when local changes exist and use fast-forward-only pulls.
+- Release downloads must use HTTPS GitHub hosts and the expected repository path.
+- Published checksums are verified when available; mismatches stop installation.
+- Invalid or untrusted Authenticode signatures stop installation; unsigned apps are reported in history.
+- Portable uninstall paths must remain inside the configured managed install root.
+- System-wide and privacy changes remain explicit actions; they are never applied during status checks.
+
+See [Architecture](docs/ARCHITECTURE.md) for component and state details.
 
 ## Version
 
-Current script version: **v2.1** (see `$ScriptVersion` at the top of `spicetify-app.ps1`).
+Current application version: **v3.0.0**.
 
----
-
-## License
-
-Personal use. Install scripts and apps belong to their respective authors (Spicetify, Spotify, winget package maintainers, etc.). Use at your own risk.
+This is a personal helper project and is not affiliated with Spotify or Spicetify.

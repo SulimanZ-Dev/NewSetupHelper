@@ -1,0 +1,55 @@
+name: Build and release Windows apps
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PS2EXE
+        shell: powershell
+        run: Install-Module ps2exe -Scope CurrentUser -Force
+
+      - name: Test
+        shell: powershell
+        run: .\scripts\Test.ps1
+
+      - name: Build executables
+        shell: powershell
+        run: |
+          $version = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}'.TrimStart('v') } else { '3.0.0' }
+          .\build.ps1 -Version $version -SkipTests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SulimanAppHub-Windows-x64
+          path: dist/*
+
+      - name: Publish GitHub release assets
+        if: github.ref_type == 'tag'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view '${{ github.ref_name }}' 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create '${{ github.ref_name }}' --title "Suliman App Hub ${{ github.ref_name }}" --generate-notes
+          }
+          $assets = @(
+            (Resolve-Path 'dist\SulimanAppHub.exe').Path,
+            (Resolve-Path 'dist\SulimanAppHub.Terminal.exe').Path,
+            (Resolve-Path 'dist\SpicetifySetupHelper.exe').Path,
+            (Resolve-Path 'dist\SHA256SUMS.txt').Path,
+            (Get-ChildItem 'dist\SulimanAppHub-*-Windows-x64.zip' | Select-Object -First 1).FullName
+          )
+          gh release upload '${{ github.ref_name }}' @assets --clobber
