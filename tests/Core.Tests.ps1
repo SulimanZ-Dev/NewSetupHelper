@@ -1,7 +1,9 @@
 Describe 'Suliman App Hub Core' {
-    $modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'modules\SulimanAppHub.Core.psm1'
-    $env:SULIMAN_APP_HUB_DATA = Join-Path $TestDrive 'data'
-    Import-Module $modulePath -Force
+    BeforeAll {
+        $modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'modules\SulimanAppHub.Core.psm1'
+        $env:SULIMAN_APP_HUB_DATA = Join-Path $TestDrive 'data'
+        Import-Module $modulePath -Force
+    }
 
     Context 'Catalog' {
         It 'loads built-in apps, repositories, and profiles' {

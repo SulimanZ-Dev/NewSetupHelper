@@ -25,6 +25,13 @@ $pester = Get-Module -ListAvailable Pester | Sort-Object Version -Descending | S
 if (-not $pester) { throw 'Pester is required to run tests.' }
 Import-Module $pester.Path -Force
 $result = Invoke-Pester -Script (Join-Path $root 'tests') -PassThru
-if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) Pester test(s) failed." }
+$failedContainers = if ($result.PSObject.Properties.Name -contains 'FailedContainers') {
+    @($result.FailedContainers).Count
+} else {
+    0
+}
+if ($result.FailedCount -gt 0 -or $failedContainers -gt 0 -or $result.PassedCount -eq 0) {
+    throw "Pester validation failed: $($result.FailedCount) failed test(s), $failedContainers failed container(s), $($result.PassedCount) passed test(s)."
+}
 
 Write-Host "Validation passed: $($result.PassedCount) Pester tests." -ForegroundColor Green
