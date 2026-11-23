@@ -27,7 +27,7 @@ jobs:
       - name: Build executables
         shell: powershell
         run: |
-          $version = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}'.TrimStart('v') } else { '3.0.0' }
+          $version = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}'.TrimStart('v') } else { '4.0.0' }
           .\build.ps1 -Version $version -SkipTests
 
       - uses: actions/upload-artifact@v7

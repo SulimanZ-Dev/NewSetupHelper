@@ -13,6 +13,7 @@ $script:SahStatePath = Join-Path $script:SahDataRoot 'state.json'
 $script:SahHistoryPath = Join-Path $script:SahDataRoot 'history.jsonl'
 $script:SahLogPath = Join-Path $script:SahDataRoot 'hub.log'
 $script:SahWingetCache = $null
+$script:SahUninstallNameCache = $null
 
 function Initialize-SahDataRoot {
     if (-not (Test-Path -LiteralPath $script:SahDataRoot)) {
@@ -43,6 +44,12 @@ function ConvertTo-SahHashtable {
         }
         return $InputObject
     }
+}
+
+function Get-SahSetting {
+    param([hashtable]$Table, [string]$Key, $Default = $null)
+    if ($null -ne $Table -and $Table.ContainsKey($Key) -and $null -ne $Table[$Key]) { return $Table[$Key] }
+    return $Default
 }
 
 function Write-SahLog {
@@ -209,6 +216,68 @@ function Test-SahTrustedGitHubUrl {
     catch { return $false }
 }
 
+function Test-SahUrlAvailable {
+    param([Parameter(Mandatory = $true)][string]$Url, [int]$TimeoutSec = 30)
+    $webResponse = $null
+    try {
+        if ($Url -notmatch '^https://') { throw 'Endast HTTPS-adresser ar tillatna.' }
+        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request.Method = 'GET'
+        $request.AllowAutoRedirect = $true
+        $request.MaximumAutomaticRedirections = 10
+        $request.Timeout = $TimeoutSec * 1000
+        $request.ReadWriteTimeout = $TimeoutSec * 1000
+        $request.UserAgent = 'Suliman-App-Hub'
+        $request.AddRange(0, 1)
+        $webResponse = $request.GetResponse()
+        $statusCode = [int]$webResponse.StatusCode
+        $finalUri = $webResponse.ResponseUri.AbsoluteUri
+        $fileName = ''
+        try {
+            $disposition = [string]$webResponse.Headers['Content-Disposition']
+            if ($disposition -match 'filename\*?=(?:UTF-8'''')?"?([^";]+)"?') { $fileName = [Uri]::UnescapeDataString($matches[1].Trim()) }
+        }
+        catch { }
+        if (-not $fileName) { $fileName = [IO.Path]::GetFileName($webResponse.ResponseUri.AbsolutePath) }
+        if (([Uri]$finalUri).Scheme -ne 'https') {
+            return [pscustomobject]@{ Success = $false; StatusCode = $statusCode; FinalUri = $finalUri; FileName = $fileName; Message = 'Omdirigerades till en osaker adress (inte HTTPS).' }
+        }
+        $success = $statusCode -ge 200 -and $statusCode -lt 300
+        return [pscustomobject]@{ Success = $success; StatusCode = $statusCode; FinalUri = $finalUri; FileName = $fileName; Message = "HTTP $statusCode" }
+    }
+    catch {
+        $statusCode = 0
+        try { if ($_.Exception.Response) { $statusCode = [int]$_.Exception.Response.StatusCode } } catch { }
+        return [pscustomobject]@{ Success = $false; StatusCode = $statusCode; FinalUri = $Url; FileName = ''; Message = $_.Exception.Message }
+    }
+    finally {
+        if ($null -ne $webResponse) { $webResponse.Close() }
+    }
+}
+
+function Test-SahNetworkAvailable {
+    foreach ($probe in @('https://api.github.com', 'https://www.microsoft.com')) {
+        $result = Test-SahUrlAvailable -Url $probe -TimeoutSec 8
+        if ($result.Success) { return $true }
+    }
+    return $false
+}
+
+function Save-SahVerifiedDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [string[]]$AllowedExtensions = @('.exe', '.msi', '.msix', '.msixbundle', '.appx', '.zip')
+    )
+    try { Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -MaximumRedirection 10 -TimeoutSec 900 -ErrorAction Stop }
+    catch { throw "Nedladdningen misslyckades: $($_.Exception.Message)" }
+    if (-not (Test-Path -LiteralPath $Destination)) { throw 'Nedladdningen skapade ingen fil.' }
+    $file = Get-Item -LiteralPath $Destination
+    if ($file.Length -le 0) { throw 'Den nedladdade filen ar tom (0 byte).' }
+    if ($AllowedExtensions -notcontains $file.Extension.ToLowerInvariant()) { throw "Ovantad filtyp: $($file.Extension)" }
+    return $file
+}
+
 function Get-SahLatestRelease {
     param([Parameter(Mandatory = $true)][string]$Repository)
     if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "Invalid GitHub repository: $Repository" }
@@ -237,6 +306,259 @@ function Select-SahReleaseAsset {
 function Get-SahChecksumAsset {
     param([Parameter(Mandatory = $true)]$Release)
     return @($Release.assets | Where-Object { $_.name -match '(?i)(sha256|checksums?).*\.(txt|sha256|sum)$' } | Select-Object -First 1)[0]
+}
+
+function Get-SahSourceLabel {
+    param([Parameter(Mandatory = $true)][hashtable]$Source)
+    switch ([string](Get-SahSetting -Table $Source -Key 'method' -Default '')) {
+        'winget' { return 'winget' }
+        'msstore' { return 'Microsoft Store' }
+        'github' { return 'GitHub Releases' }
+        'website' { return 'officiell webbplats' }
+        'browser' { return 'webblasaren' }
+        default { return [string]$Source.method }
+    }
+}
+
+function Get-SahGitHubSourceAsset {
+    param([Parameter(Mandatory = $true)][hashtable]$Source)
+    $repository = [string]$Source.repository
+    if ($repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "Ogiltigt GitHub-repository: $repository" }
+    $includeSetting = Get-SahSetting -Table $Source -Key 'assetInclude'
+    $preferSetting = Get-SahSetting -Table $Source -Key 'assetPrefer'
+    $excludeSetting = Get-SahSetting -Table $Source -Key 'assetExclude'
+    $include = if ($includeSetting) { @($includeSetting) } else { @('(?i)\.(exe|msi|msix|msixbundle|appx|zip)$') }
+    $prefer = if ($preferSetting) { @($preferSetting) } else { @('(?i)(setup|install)', '(?i)x64') }
+    $exclude = if ($excludeSetting) { @($excludeSetting) } else { @('(?i)(sha256|checksums?)') }
+    $latest = Get-SahLatestRelease -Repository $repository
+    $asset = Select-SahReleaseAsset -Release $latest -Include $include -Prefer $prefer -Exclude $exclude
+    if ($null -eq $asset) { throw "Senaste GitHub-releasen for $repository saknar Windows-installer." }
+    return [pscustomobject]@{ Release = $latest; Asset = $asset }
+}
+
+function Get-SahWebsiteDownload {
+    param([Parameter(Mandatory = $true)][hashtable]$Source)
+    $pageUrl = [string](Get-SahSetting -Table $Source -Key 'url' -Default '')
+    if (-not $pageUrl) { throw 'Ingen webbadress angiven.' }
+    if (Get-SahSetting -Table $Source -Key 'direct') { return $pageUrl }
+    try { $page = Invoke-WebRequest -Uri $pageUrl -UseBasicParsing -MaximumRedirection 10 -TimeoutSec 30 -ErrorAction Stop }
+    catch { throw "Kunde inte hamta sidan $pageUrl ($($_.Exception.Message))." }
+    $pattern = if (Get-SahSetting -Table $Source -Key 'linkPattern') { [string]$Source.linkPattern } else { '(?i)\.(exe|msi|msix|appx|zip)(\?|$)' }
+    $extensionPattern = '(?i)\.(exe|msi|msix|appx|zip)(\?|#|$)'
+    foreach ($match in [regex]::Matches([string]$page.Content, 'href\s*=\s*["'']([^"'']+)["'']')) {
+        $link = $match.Groups[1].Value
+        if ($link -notmatch $pattern) { continue }
+        if ($link -notmatch $extensionPattern) { continue }
+        if ($link -match '^https?://') { return $link }
+        if ($link -match '^//') { return "https:$link" }
+        return ([Uri]::new([Uri]$pageUrl, $link)).AbsoluteUri
+    }
+    throw 'Sidan innehaller ingen direkt Windows-nedladdning.'
+}
+
+function Resolve-SahMultiSource {
+    param([Parameter(Mandatory = $true)][hashtable]$Source)
+    $method = [string](Get-SahSetting -Table $Source -Key 'method' -Default '')
+    $silentSetting = Get-SahSetting -Table $Source -Key 'silentArgs'
+    $silent = if ($silentSetting) { @($silentSetting) } else { @() }
+    switch ($method) {
+        'winget' {
+            $packageId = [string](Get-SahSetting -Table $Source -Key 'packageId' -Default '')
+            if (-not $packageId) { throw 'Inget winget-ID angivet.' }
+            if (-not (Test-SahCommand 'winget')) { throw 'winget saknas pa datorn.' }
+            $show = Invoke-SahExternal -FilePath 'winget' -Arguments @('show', '--id', $packageId, '--exact', '--source', 'winget', '--accept-source-agreements', '--disable-interactivity') -Capture
+            if (-not $show.Success -or $show.Output -match '(?i)no package found') { throw "winget hittade inget paket med ID $packageId." }
+            $version = ''
+            $match = [regex]::Match($show.Output, '(?im)^\s*Version:\s*(\S+)')
+            if ($match.Success) { $version = $match.Groups[1].Value.Trim() }
+            return [pscustomobject]@{ Method = 'winget'; PackageId = $packageId; PackageSource = 'winget'; Version = $version; Url = ''; FileName = ''; SilentArgs = @() }
+        }
+        'msstore' {
+            $productId = [string](Get-SahSetting -Table $Source -Key 'productId' -Default '')
+            if (-not $productId) { throw 'Inget Store-produkt-ID angivet.' }
+            if (-not (Test-SahCommand 'winget')) { throw 'winget saknas pa datorn.' }
+            $show = Invoke-SahExternal -FilePath 'winget' -Arguments @('show', '--id', $productId, '--exact', '--source', 'msstore', '--accept-source-agreements', '--disable-interactivity') -Capture
+            if (-not $show.Success -or $show.Output -match '(?i)no package found') { throw "Microsoft Store-paketet $productId hittades inte." }
+            $version = ''
+            $match = [regex]::Match($show.Output, '(?im)^\s*Version:\s*(\S+)')
+            if ($match.Success -and $match.Groups[1].Value -notmatch '(?i)^unknown$') { $version = $match.Groups[1].Value.Trim() }
+            return [pscustomobject]@{ Method = 'msstore'; PackageId = $productId; PackageSource = 'msstore'; Version = $version; Url = ''; FileName = ''; SilentArgs = @() }
+        }
+        'github' {
+            $resolved = Get-SahGitHubSourceAsset -Source $Source
+            $asset = $resolved.Asset
+            if (-not (Test-SahTrustedGitHubUrl -Url $asset.browser_download_url -Repository ([string](Get-SahSetting -Table $Source -Key 'repository' -Default '')))) { throw 'GitHub gav en otillforlitlig nedladdningsadress.' }
+            $check = Test-SahUrlAvailable -Url $asset.browser_download_url
+            if (-not $check.Success) { throw "Nedladdningen svarade inte med HTTP 200 ($($check.Message))." }
+            return [pscustomobject]@{ Method = 'github'; PackageId = ''; PackageSource = ''; Version = [string]$resolved.Release.tag_name; Url = $asset.browser_download_url; FileName = [string]$asset.name; SilentArgs = $silent }
+        }
+        'website' {
+            $downloadUrl = Get-SahWebsiteDownload -Source $Source
+            $check = Test-SahUrlAvailable -Url $downloadUrl
+            if (-not $check.Success) { throw "Nedladdningen svarade inte med HTTP 200 ($($check.Message))." }
+            $finalPath = ([Uri]$check.FinalUri).AbsolutePath
+            $fileName = if ($check.FileName) { [string]$check.FileName } else { [IO.Path]::GetFileName($finalPath) }
+            $extension = [IO.Path]::GetExtension($fileName).ToLowerInvariant()
+            if (@('.exe', '.msi', '.msix', '.appx', '.zip') -notcontains $extension) { throw "Nedladdningen har en ovantad filtyp ($extension)." }
+            $version = ''
+            if (Get-SahSetting -Table $Source -Key 'versionPattern') {
+                $versionMatch = [regex]::Match($fileName, [string]$Source.versionPattern)
+                if ($versionMatch.Success -and $versionMatch.Groups.Count -gt 1) { $version = $versionMatch.Groups[1].Value }
+            }
+            return [pscustomobject]@{ Method = 'website'; PackageId = ''; PackageSource = ''; Version = $version; Url = $downloadUrl; FileName = $fileName; SilentArgs = $silent }
+        }
+        'browser' {
+            $url = [string](Get-SahSetting -Table $Source -Key 'url' -Default '')
+            if (-not $url) { throw 'Ingen adress angiven for webblasaren.' }
+            return [pscustomobject]@{ Method = 'browser'; PackageId = ''; PackageSource = ''; Version = ''; Url = $url; FileName = ''; SilentArgs = @() }
+        }
+        default { throw "Okand metod: $method" }
+    }
+}
+
+function Get-SahAppResolution {
+    param([Parameter(Mandatory = $true)][hashtable]$App)
+    $sources = @($App.sources)
+    if ($sources.Count -eq 0) { throw "Appen $($App.name) har inga nedladdningskallor." }
+    $attempts = @()
+    for ($index = 0; $index -lt $sources.Count; $index++) {
+        $source = $sources[$index]
+        $label = Get-SahSourceLabel -Source $source
+        try {
+            $resolved = Resolve-SahMultiSource -Source $source
+            $attempts += [pscustomobject]@{ Method = [string](Get-SahSetting -Table $source -Key 'method' -Default ''); Label = $label; Success = $true; Message = "$($label): OK" }
+            return [pscustomobject]@{
+                App = $App
+                Success = $true
+                Method = $resolved.Method
+                Label = $label
+                PackageId = $resolved.PackageId
+                PackageSource = $resolved.PackageSource
+                Version = $resolved.Version
+                Url = $resolved.Url
+                FileName = $resolved.FileName
+                SilentArgs = @($resolved.SilentArgs)
+                Attempts = $attempts
+                Message = $label
+            }
+        }
+        catch {
+            $reason = $_.Exception.Message
+            $message = if ($index + 1 -lt $sources.Count) {
+                "$label misslyckades: $reason Provar $(Get-SahSourceLabel -Source $sources[$index + 1])."
+            }
+            else { "$label misslyckades: $reason Ingen metod kvar." }
+            $attempts += [pscustomobject]@{ Method = [string](Get-SahSetting -Table $source -Key 'method' -Default ''); Label = $label; Success = $false; Message = $message }
+            Write-SahLog -Message "$($App.name): $message" -Level 'WARN'
+        }
+    }
+    return [pscustomobject]@{
+        App = $App; Success = $false; Method = ''; Label = ''; PackageId = ''; PackageSource = ''; Version = ''; Url = ''; FileName = ''; SilentArgs = @()
+        Attempts = $attempts
+        Message = (@($attempts | ForEach-Object { $_.Message }) -join ' ')
+    }
+}
+
+function Get-SahUninstallDisplayNames {
+    if ($null -eq $script:SahUninstallNameCache) {
+        $paths = @(
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        $names = @()
+        foreach ($item in @(Get-ItemProperty $paths -ErrorAction SilentlyContinue)) {
+            $property = $item.PSObject.Properties['DisplayName']
+            if ($null -ne $property -and $property.Value) { $names += [string]$property.Value }
+        }
+        $script:SahUninstallNameCache = $names
+    }
+    return $script:SahUninstallNameCache
+}
+
+function Get-SahRegisteredUninstaller {
+    param([string[]]$Names)
+    foreach ($name in @($Names | Where-Object { $_ })) {
+        $entry = Get-SahUninstallEntry -DisplayName $name
+        if ($entry) { return $entry }
+    }
+    return $null
+}
+
+function Get-SahInstalledByName {
+    param([string[]]$Names, [string[]]$Exclude = @())
+    $filtered = @($Names | Where-Object { $_ })
+    $excluded = @($Exclude | Where-Object { $_ })
+    if ($filtered.Count -eq 0) { return $false }
+    if (Test-SahCommand 'winget') {
+        $inventory = Get-SahWingetInventory
+        foreach ($name in $filtered) {
+            $lines = @([string]$inventory.List -split "`r?`n" | Where-Object { $_ -match "(?im)^\s*$([regex]::Escape($name))\s{2,}" })
+            foreach ($line in $lines) {
+                $skip = $false
+                foreach ($excludeName in $excluded) { if ($line -like "*$excludeName*") { $skip = $true; break } }
+                if (-not $skip) { return $true }
+            }
+        }
+    }
+    $displayNames = @(Get-SahUninstallDisplayNames)
+    foreach ($name in $filtered) {
+        foreach ($displayName in $displayNames) {
+            if ($displayName -notlike "*$name*") { continue }
+            $skip = $false
+            foreach ($excludeName in $excluded) { if ($displayName -like "*$excludeName*") { $skip = $true; break } }
+            if (-not $skip) { return $true }
+        }
+    }
+    return $false
+}
+
+function Get-SahMultiAppStatus {
+    param([Parameter(Mandatory = $true)][hashtable]$App, [switch]$CheckRemote)
+    $detectNames = Get-SahSetting -Table $App -Key 'detectNames'
+    $names = if ($detectNames) { @($detectNames) } else { @($App.name) }
+    $state = Get-SahState
+    $entry = if ($state.installed.ContainsKey($App.id)) { $state.installed[$App.id] } else { $null }
+    $detectExclude = Get-SahSetting -Table $App -Key 'detectExclude'
+    $installed = (Get-SahInstalledByName -Names $names -Exclude @($detectExclude)) -or ($null -ne $entry)
+    $installedVersion = if ($entry) { [string]$entry.version } else { '' }
+    $latestVersion = ''
+    $storeSource = @($App.sources | Where-Object { $_.method -in @('winget', 'msstore') } | Select-Object -First 1)[0]
+    if ($null -ne $storeSource) {
+        $packageId = [string](Get-SahSetting -Table $storeSource -Key 'packageId' -Default (Get-SahSetting -Table $storeSource -Key 'productId' -Default ''))
+        $wingetStatus = Get-SahWingetStatus -PackageId $packageId -CheckUpgrades:$CheckRemote
+        if ($wingetStatus.Installed) {
+            $installed = $true
+            if ($wingetStatus.Version) { $installedVersion = $wingetStatus.Version }
+            if ($wingetStatus.Available) { $latestVersion = $wingetStatus.Available }
+        }
+    }
+    if (-not $installedVersion -and $installed -and (Test-SahCommand 'winget')) {
+        $inventory = Get-SahWingetInventory
+        foreach ($name in $names) {
+            $line = @([string]$inventory.List -split "`r?`n" | Where-Object { $_ -match "(?im)^\s*$([regex]::Escape($name))\s{2,}" } | Select-Object -First 1)[0]
+            if (-not $line) { continue }
+            $parts = @($line -split '\s{2,}' | Where-Object { $_ })
+            if ($parts.Count -ge 3) { $installedVersion = $parts[2].Trim(); break }
+        }
+    }
+    if ($CheckRemote -and -not $latestVersion) {
+        try {
+            $resolution = Get-SahAppResolution -App $App
+            if ($resolution.Success) { $latestVersion = [string]$resolution.Version }
+        }
+        catch { Write-SahLog -Message "Kunde inte losa senaste version for $($App.name): $($_.Exception.Message)" -Level 'WARN' }
+    }
+    $sourceLabel = switch ([string](@($App.sources)[0]).method) { 'winget' { 'winget' } 'msstore' { 'msstore' } 'github' { 'GitHub' } default { 'Webb' } }
+    return [pscustomobject]@{
+        Id = $App.id
+        Name = $App.name
+        Installed = $installed
+        InstalledVersion = $installedVersion
+        LatestVersion = $latestVersion
+        UpdateAvailable = ($installed -and $latestVersion -and $installedVersion -and $installedVersion -ne $latestVersion)
+        Source = $sourceLabel
+    }
 }
 
 function Test-SahDownloadedChecksum {
@@ -283,6 +605,7 @@ function Get-SahWingetInventory {
 
 function Clear-SahStatusCache {
     $script:SahWingetCache = $null
+    $script:SahUninstallNameCache = $null
 }
 
 function Get-SahWingetStatus {
@@ -312,6 +635,9 @@ function Get-SahWingetStatus {
 
 function Get-SahAppStatus {
     param([Parameter(Mandatory = $true)][hashtable]$App, [switch]$CheckRemote)
+    if ($App.kind -eq 'Multi') {
+        return Get-SahMultiAppStatus -App $App -CheckRemote:$CheckRemote
+    }
     if ($App.kind -eq 'Winget') {
         $status = Get-SahWingetStatus -PackageId $App.packageId -CheckUpgrades:$CheckRemote
         return [pscustomobject]@{ Id = $App.id; Name = $App.name; Installed = $status.Installed; InstalledVersion = $status.Version; LatestVersion = $status.Available; UpdateAvailable = $status.UpdateAvailable; Source = 'winget' }
@@ -458,14 +784,76 @@ function Install-SahDownloadedAsset {
     return [pscustomobject]@{ Success = $true; Version = $Version; ExecutablePath = $executablePath; PostActions = $postResults }
 }
 
+function Install-SahMultiApp {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$App,
+        [string[]]$PostActions = @(),
+        [string]$OperationId = '',
+        [switch]$Force
+    )
+    if (-not (Test-SahNetworkAvailable)) { throw 'Ingen natverksanslutning. Kontrollera internetanslutningen och forsok igen.' }
+    if (-not $Force) {
+        $status = Get-SahAppStatus -App $App
+        if ($status.Installed) {
+            $versionText = if ($status.InstalledVersion) { " ($($status.InstalledVersion))" } else { '' }
+            Add-SahHistory -Action 'Install' -Target $App.name -Success $true -Version $status.InstalledVersion -Message 'Redan installerad' -OperationId $OperationId | Out-Null
+            return [pscustomobject]@{ Success = $true; App = $App; Skipped = $true; Version = $status.InstalledVersion; Message = "$($App.name) ar redan installerad$versionText - hoppar over."; OperationId = $OperationId }
+        }
+    }
+    $resolution = Get-SahAppResolution -App $App
+    if (-not $resolution.Success) {
+        throw ("Kunde inte losa en installationsmetod. " + ((@($resolution.Attempts) | ForEach-Object { $_.Message }) -join ' '))
+    }
+    if ($resolution.Method -eq 'browser') {
+        Start-Process -FilePath $resolution.Url
+        Add-SahHistory -Action 'OpenPage' -Target $App.name -Success $true -Message "Manuell nedladdning: $($resolution.Url)" -OperationId $OperationId | Out-Null
+        return [pscustomobject]@{ Success = $true; App = $App; Skipped = $false; Version = ''; Message = "Ingen automatisk nedladdning hittades. Oppnade $($resolution.Url) i webblasaren for manuell installation."; OperationId = $OperationId }
+    }
+    if ($resolution.Method -in @('winget', 'msstore')) {
+        $arguments = @('install', '--id', $resolution.PackageId, '--exact', '--source', $resolution.PackageSource, '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
+        $winget = Invoke-SahExternal -FilePath 'winget' -Arguments $arguments -SuccessCodes @(0, -1978335189)
+        if (-not $winget.Success) { throw "winget install av $($resolution.PackageId) avslutades med kod $($winget.ExitCode) via $($resolution.Method)." }
+        Clear-SahStatusCache
+        Add-SahHistory -Action 'Install' -Target $App.name -Success $true -Version $resolution.Version -Message "$($resolution.Method) $($resolution.PackageId)" -OperationId $OperationId | Out-Null
+        return [pscustomobject]@{ Success = $true; App = $App; Skipped = $false; Version = $resolution.Version; Message = "Installerad med $($resolution.Label)."; OperationId = $OperationId }
+    }
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("SulimanAppHub-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    try {
+        $fileName = [string]$resolution.FileName
+        if (-not $fileName -or $fileName -notmatch '(?i)\.(exe|msi|msix|msixbundle|appx|zip)$') { $fileName = "$($App.id).exe" }
+        $file = Save-SahVerifiedDownload -Url $resolution.Url -Destination (Join-Path $tempRoot $fileName)
+        $signature = Get-SahAuthenticodeStatus -FilePath $file.FullName
+        if ($signature -in @('HashMismatch', 'NotTrusted')) { throw "Ogiltig Authenticode-signatur: $signature" }
+        $installApp = $App.Clone()
+        $installApp.installMode = 'Installer'
+        $installApp.silentArgs = @($resolution.SilentArgs)
+        $installed = Install-SahDownloadedAsset -App $installApp -FilePath $file.FullName -Version $resolution.Version -PostActions $PostActions
+        Add-SahHistory -Action 'Install' -Target $App.name -Success $true -Version $resolution.Version -Message "asset=$fileName; method=$($resolution.Method); signature=$signature" -OperationId $OperationId | Out-Null
+        return [pscustomobject]@{ Success = $true; App = $App; Skipped = $false; Version = $resolution.Version; Asset = $fileName; Signature = $signature; ExecutablePath = $installed.ExecutablePath; Message = "Installerad via $($resolution.Label)."; OperationId = $OperationId }
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($message -match '(?i)(1223|access is denied|code 5\b|740|elevation)') {
+            throw "$message Installern kravde administrativ behorighet. Starta Suliman App Hub som administrator och forsok igen."
+        }
+        throw
+    }
+    finally { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 function Install-SahApp {
     param(
         [Parameter(Mandatory = $true)][hashtable]$App,
         [string[]]$PostActions = @(),
-        [int]$RetryCount = 1
+        [int]$RetryCount = 1,
+        [switch]$Force
     )
     $operationId = [Guid]::NewGuid().ToString('N').Substring(0, 10)
     try {
+        if ($App.kind -eq 'Multi') {
+            return Install-SahMultiApp -App $App -PostActions $PostActions -OperationId $operationId -Force:$Force
+        }
         if ($App.kind -eq 'Winget') {
             if (-not (Test-SahCommand 'winget')) { throw 'winget is not installed.' }
             $arguments = @('install', '--id', $App.packageId, '--exact', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
@@ -514,6 +902,26 @@ function Install-SahApp {
 
 function Update-SahApp {
     param([Parameter(Mandatory = $true)][hashtable]$App)
+    if ($App.kind -eq 'Multi') {
+        try {
+            $resolution = Get-SahAppResolution -App $App
+            if (-not $resolution.Success) { throw $resolution.Message }
+            if ($resolution.Method -in @('winget', 'msstore')) {
+                $packageStatus = Get-SahWingetStatus -PackageId $resolution.PackageId
+                if ($packageStatus.Installed) {
+                    $upgrade = Invoke-SahExternal -FilePath 'winget' -Arguments @('upgrade', '--id', $resolution.PackageId, '--exact', '--source', $resolution.PackageSource, '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity') -SuccessCodes @(0, -1978335189)
+                    Add-SahHistory -Action 'Update' -Target $App.name -Success $upgrade.Success -Message "winget exit $($upgrade.ExitCode)" | Out-Null
+                    Clear-SahStatusCache
+                    return [pscustomobject]@{ Success = $upgrade.Success; App = $App; Message = "winget exit $($upgrade.ExitCode)" }
+                }
+            }
+            return Install-SahApp -App $App -Force
+        }
+        catch {
+            Add-SahHistory -Action 'Update' -Target $App.name -Success $false -Message $_.Exception.Message | Out-Null
+            return [pscustomobject]@{ Success = $false; App = $App; Message = $_.Exception.Message }
+        }
+    }
     if ($App.kind -eq 'Winget') {
         $result = Invoke-SahExternal -FilePath 'winget' -Arguments @('upgrade', '--id', $App.packageId, '--exact', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity') -SuccessCodes @(0, -1978335189)
         Add-SahHistory -Action 'Update' -Target $App.name -Success $result.Success -Message "winget exit $($result.ExitCode)" | Out-Null
@@ -530,13 +938,33 @@ function Get-SahUninstallEntry {
         'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
         'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
     )
-    return Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*$DisplayName*" } | Select-Object -First 1
+    return Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object { $null -ne $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like "*$DisplayName*" } | Select-Object -First 1
 }
 
 function Uninstall-SahApp {
     param([Parameter(Mandatory = $true)][hashtable]$App)
     try {
-        if ($App.kind -eq 'Winget') {
+        if ($App.kind -eq 'Multi') {
+            $storeSource = @($App.sources | Where-Object { $_.method -in @('winget', 'msstore') } | Select-Object -First 1)[0]
+            if ($null -ne $storeSource) {
+                $packageId = [string](Get-SahSetting -Table $storeSource -Key 'packageId' -Default (Get-SahSetting -Table $storeSource -Key 'productId' -Default ''))
+                $sourceName = if ($storeSource.method -eq 'msstore') { 'msstore' } else { 'winget' }
+                $result = Invoke-SahExternal -FilePath 'winget' -Arguments @('uninstall', '--id', $packageId, '--exact', '--source', $sourceName, '--silent', '--disable-interactivity') -SuccessCodes @(0)
+                if (-not $result.Success) { throw "winget exited with code $($result.ExitCode)" }
+                Clear-SahStatusCache
+            }
+            else {
+                $detectNames = Get-SahSetting -Table $App -Key 'detectNames'
+                $names = if ($detectNames) { @($detectNames) } else { @($App.name) }
+                $uninstall = Get-SahRegisteredUninstaller -Names $names
+                if (-not $uninstall) { throw 'No registered uninstaller was found.' }
+                $command = if ($uninstall.QuietUninstallString) { $uninstall.QuietUninstallString } else { $uninstall.UninstallString }
+                Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/s', '/c', $command) -Wait
+            }
+            $state = Get-SahState
+            if ($state.installed.ContainsKey($App.id)) { $state.installed.Remove($App.id); Save-SahState -State $state }
+        }
+        elseif ($App.kind -eq 'Winget') {
             $result = Invoke-SahExternal -FilePath 'winget' -Arguments @('uninstall', '--id', $App.packageId, '--exact', '--silent', '--disable-interactivity') -SuccessCodes @(0)
             if (-not $result.Success) { throw "winget exited with code $($result.ExitCode)" }
             Clear-SahStatusCache

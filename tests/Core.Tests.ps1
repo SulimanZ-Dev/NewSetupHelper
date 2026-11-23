@@ -20,6 +20,17 @@ Describe 'Suliman App Hub Core' {
             if ($ids -notcontains 'vault') { throw 'Vault is missing from the catalog.' }
         }
 
+        It 'contains the multi-source apps with a browser fallback' {
+            $apps = @((Get-SahCatalog).apps | Where-Object { $_.kind -eq 'Multi' })
+            foreach ($id in @('freebuff', 'protonvpn', 'fenn', 'screenwise', 'qwiktwik', 'revo-uninstaller')) {
+                $app = @($apps | Where-Object { $_.id -eq $id })[0]
+                if (-not $app) { throw "$id is missing from the catalog." }
+                $sources = @($app.sources)
+                if ($sources.Count -lt 2) { throw "$id should define an automatic source and a fallback." }
+                if ($sources[$sources.Count - 1].method -ne 'browser') { throw "$id must end with the browser fallback." }
+            }
+        }
+
         It 'returns the expected development profile' {
             $ids = @(Get-SahProfileApps -ProfileId 'development' | ForEach-Object { $_.id })
             if ($ids -notcontains 'git') { throw 'Git is missing from the development profile.' }

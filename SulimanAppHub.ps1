@@ -2,7 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Continue'
-$script:HubVersion = '3.0.0'
+$script:HubVersion = '4.0.0'
 $script:Root = if ($PSScriptRoot) {
     $PSScriptRoot
 }

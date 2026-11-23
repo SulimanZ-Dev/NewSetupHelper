@@ -1,6 +1,6 @@
 # Suliman App Hub + Spicetify PC Setup Helper
 
-Suliman App Hub is a Windows app for installing, updating, backing up, and managing apps and GitHub repositories. Version 3 keeps the original PowerShell terminal helper and adds a separate WinForms GUI powered by the same PowerShell core.
+Suliman App Hub is a Windows app for installing, updating, backing up, and managing apps and GitHub repositories. Version 4 keeps the original PowerShell terminal helper and adds a separate WinForms GUI powered by the same PowerShell core.
 
 ## Editions
 
@@ -9,6 +9,7 @@ Suliman App Hub is a Windows app for installing, updating, backing up, and manag
 | `SulimanAppHub.exe` | Full Windows GUI with search, tabs, queues, progress, retry, and clear results |
 | `SulimanAppHub.Terminal.exe` | Advanced terminal edition with the same catalog and management engine |
 | `SpicetifySetupHelper.exe` | Original terminal-based Spicetify and PC setup helper, now with App Hub launch options |
+| `NewSetupHelper-v4.0.0.exe` | Versioned build of the original terminal helper; requests administrator rights for installs |
 
 The GUI never replaces the terminal version. Both editions remain available in every release.
 
@@ -25,6 +26,9 @@ The GUI never replaces the terminal version. Both editions remain available in e
 - Export and restore computer profiles containing winget packages, App Hub settings/state/history, repository inventory, Spicetify configuration, privacy settings snapshot, and system information.
 - Compare a backup from another computer with the current machine.
 - Update winget apps, tracked GitHub apps, Spicetify, and the helper from one flow.
+- Update one installed app or all installed apps from the Install Apps menu, with a dry-run check first.
+- Update through winget, Microsoft Store, GitHub Releases, or the vendor's official website, always in place.
+- Install Freebuff, Proton VPN, Fenn, ScreenWise, QwikTwik, and Revo Uninstaller from the same menu.
 - Keep JSONL installation history, troubleshooting IDs, and a readable log.
 - Diagnose Windows, disk, RAM, drivers, winget, Git, Node.js, PowerShell, and Spicetify.
 - Optional post-install shortcut, taskbar pin, app launch, and Windows app settings actions.
@@ -40,6 +44,16 @@ Taskbar pinning is best effort because current Windows versions may hide that sh
 - [Vault](https://github.com/SulimanZ-Dev/Vault)
 
 The catalog checks the repositories' latest GitHub releases at runtime, so new releases are discovered without changing the helper source.
+
+## Install Apps and updates
+
+The original helper's Install Apps menu includes an Updates section:
+
+- **[25] Update a single installed app** lists the installed apps it can update, with their installed versions.
+- **[26] Update all installed apps** checks every installed app in the menu and updates only those with a newer version.
+- **[27] Check for updates (dry run)** reports installed and latest versions without downloading or installing anything.
+
+Updates run in place; nothing is uninstalled and no settings or user data are removed. Each app is handled by the first method that applies: winget, Microsoft Store, GitHub Releases, or the vendor's official website. BetterDiscord, Vencord, and OFF Helper have no reliable in-place update source, so they are listed as not supported. If an app is running, the helper asks you to close it and does not terminate it.
 
 ## Run from source
 
@@ -60,6 +74,12 @@ powershell -ExecutionPolicy Bypass -File .\spicetify-app.ps1
 ```
 
 Administrator rights are requested by Windows only when an operation requires them. Browsing the catalog and checking status do not require elevation.
+
+## Run the compiled helper
+
+Download `NewSetupHelper-v4.0.0.exe` from the Version 4 release and run it. The executable requests administrator rights when it starts, because installing and updating apps needs elevation. It is the same terminal helper as `spicetify-app.ps1`.
+
+The helper stores its theme configuration at `%APPDATA%\NewSetupHelper\spicetify-helper-config.json`. If an older `spicetify-helper-config.json` exists next to the script, it is copied there on first run and the existing theme choice is kept.
 
 ## Quiet profiles
 
@@ -125,13 +145,13 @@ Build all three Windows executables, a release ZIP, and SHA-256 checksums:
 
 ```powershell
 Install-Module ps2exe -Scope CurrentUser
-.\build.ps1 -Version 3.0.0
+.\build.ps1 -Version 4.0.0
 ```
 
 Optional Authenticode signing:
 
 ```powershell
-.\build.ps1 -Version 3.0.0 -CertificateThumbprint YOUR_CERTIFICATE_THUMBPRINT
+.\build.ps1 -Version 4.0.0 -CertificateThumbprint YOUR_CERTIFICATE_THUMBPRINT
 ```
 
 GitHub Actions tests and builds every push and pull request. A `v*` tag creates or updates the matching GitHub release and uploads both GUI and terminal executables, the classic helper, the ZIP bundle, and `SHA256SUMS.txt`.
@@ -150,6 +170,6 @@ See [Architecture](docs/ARCHITECTURE.md) for component and state details.
 
 ## Version
 
-Current application version: **v3.0.0**.
+Current application version: **v4.0.0**.
 
 This is a personal helper project and is not affiliated with Spotify or Spicetify.

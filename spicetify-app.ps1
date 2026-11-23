@@ -1,13 +1,18 @@
 # spicetify-app.ps1 - PC Setup and Spicetify Helper
 # Personal toolkit for Spicetify, app installs, and new-PC setup.
 
-$ScriptVersion = '3.0'
+$ScriptVersion = '4.0.0'
 $ScriptGitHubUrl = 'https://github.com/SulimanZ-Dev/NewSetupHelper'
 $ErrorActionPreference = 'Continue'
 $script:running = $true
 $script:SleepTimerJobName = 'SpicetifyHelperSleepTimer'
 
-$ScriptDirectory = if ($PSScriptRoot) {
+$processPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$isCompiledHelper = $processPath -and ($processPath -match '\.exe$') -and ((Split-Path -Leaf $processPath) -notmatch '^(?i:powershell|pwsh)(_[a-z]+)?\.exe$')
+$ScriptDirectory = if ($isCompiledHelper) {
+    Split-Path -Parent $processPath
+}
+elseif ($PSScriptRoot) {
     $PSScriptRoot
 }
 elseif ($MyInvocation.MyCommand.Path) {
@@ -16,7 +21,9 @@ elseif ($MyInvocation.MyCommand.Path) {
 else {
     [AppDomain]::CurrentDomain.BaseDirectory.TrimEnd('\')
 }
-$ThemeConfigPath = Join-Path $ScriptDirectory 'spicetify-helper-config.json'
+$ConfigRoot = if ($env:APPDATA) { Join-Path $env:APPDATA 'NewSetupHelper' } else { $ScriptDirectory }
+$LegacyThemeConfigPath = Join-Path $ScriptDirectory 'spicetify-helper-config.json'
+$ThemeConfigPath = Join-Path $ConfigRoot 'spicetify-helper-config.json'
 $LogPath = Join-Path $env:TEMP 'spicetify-helper-log.txt'
 $SessionStart = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Add-Content -Path $LogPath -Value "=== Session started: $SessionStart ==="
@@ -88,6 +95,10 @@ function Save-ThemeConfig {
     }
 
     try {
+        $configDirectory = Split-Path -Parent $ThemeConfigPath
+        if ($configDirectory -and -not (Test-Path -LiteralPath $configDirectory)) {
+            New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+        }
         $config | ConvertTo-Json | Set-Content -LiteralPath $ThemeConfigPath -Encoding UTF8
     }
     catch {
@@ -120,6 +131,19 @@ function Set-ActiveTheme {
 }
 
 function Load-ThemeConfig {
+    if (-not (Test-Path -LiteralPath $ThemeConfigPath) -and (Test-Path -LiteralPath $LegacyThemeConfigPath)) {
+        try {
+            $configDirectory = Split-Path -Parent $ThemeConfigPath
+            if ($configDirectory -and -not (Test-Path -LiteralPath $configDirectory)) {
+                New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+            }
+            Copy-Item -LiteralPath $LegacyThemeConfigPath -Destination $ThemeConfigPath -Force
+            Write-Log -Message "Migrated theme config to $ThemeConfigPath"
+        }
+        catch {
+            Write-Log -Message "Theme config migration failed: $($_.Exception.Message)" -Level 'WARN'
+        }
+    }
     if (-not (Test-Path -LiteralPath $ThemeConfigPath)) { return $false }
 
     try {
@@ -254,7 +278,9 @@ function Read-YesNo {
 
 function Read-MenuChoice {
     param([string]$Prompt = 'Choice')
-    return (Read-Host "  $Prompt").Trim()
+    $value = Read-Host "  $Prompt"
+    if ($null -eq $value) { return '' }
+    return $value.Trim()
 }
 
 function Read-PositiveInteger {
@@ -611,6 +637,17 @@ function Show-AppsMenu {
     Write-ThemedHost '-- Batch --' 'Muted'
     Write-ThemedHost ' [17]  Install ALL Dev Tools (12-16 at once)' 'Foreground'
     Write-ThemedHost ' [18]  Install ALL Gaming Launchers (10-11 at once)' 'Foreground'
+    Write-ThemedHost '-- New Apps --' 'Muted'
+    Write-ThemedHost ' [19]  Freebuff' 'Foreground'
+    Write-ThemedHost ' [20]  Proton VPN' 'Foreground'
+    Write-ThemedHost ' [21]  Fenn' 'Foreground'
+    Write-ThemedHost ' [22]  ScreenWise (Microsoft Store)' 'Foreground'
+    Write-ThemedHost ' [23]  QwikTwik (Microsoft Store)' 'Foreground'
+    Write-ThemedHost ' [24]  Revo Uninstaller (Free)' 'Foreground'
+    Write-ThemedHost '-- Updates --' 'Muted'
+    Write-ThemedHost ' [25]  Update a single installed app' 'Foreground'
+    Write-ThemedHost ' [26]  Update all installed apps' 'Foreground'
+    Write-ThemedHost ' [27]  Check for updates (dry run)' 'Foreground'
     Write-ThemedHost ''
     Write-ThemedHost '  [0]  Back to Main Menu' 'Muted'
     Write-ThemedHost '==============================' 'Border'
@@ -1198,6 +1235,449 @@ function Import-SpicetifyConfig {
 
 #region App Installers
 
+#region New App Resolvers
+
+$script:NewUninstallNames = $null
+
+function Test-HttpsDownloadUrl {
+    param(
+        [string]$Url,
+        [int]$TimeoutSec = 30
+    )
+
+    $response = $null
+    try {
+        if ($Url -notmatch '^https://') { throw 'Only HTTPS addresses are allowed.' }
+        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request.Method = 'GET'
+        $request.AllowAutoRedirect = $true
+        $request.MaximumAutomaticRedirections = 10
+        $request.Timeout = $TimeoutSec * 1000
+        $request.ReadWriteTimeout = $TimeoutSec * 1000
+        $request.UserAgent = 'Spicetify-PC-Setup-Helper'
+        $request.AddRange(0, 1)
+        $response = $request.GetResponse()
+        $status = [int]$response.StatusCode
+        $finalUrl = $response.ResponseUri.AbsoluteUri
+        $fileName = ''
+        try {
+            $disposition = [string]$response.Headers['Content-Disposition']
+            if ($disposition -match 'filename\*?=(?:UTF-8'''')?"?([^";]+)"?') { $fileName = [Uri]::UnescapeDataString($matches[1].Trim()) }
+        }
+        catch { }
+        if (-not $fileName) { $fileName = [IO.Path]::GetFileName($response.ResponseUri.AbsolutePath) }
+        if (([Uri]$finalUrl).Scheme -ne 'https') { throw 'The download redirected to a non-HTTPS address.' }
+        return @{ Ok = ($status -ge 200 -and $status -lt 300); Status = $status; FinalUrl = $finalUrl; FileName = $fileName; Error = '' }
+    }
+    catch {
+        return @{ Ok = $false; Status = 0; FinalUrl = $Url; FileName = ''; Error = $_.Exception.Message }
+    }
+    finally {
+        if ($null -ne $response) { $response.Close() }
+    }
+}
+
+function Test-InternetAvailable {
+    foreach ($probe in @('https://api.github.com', 'https://www.microsoft.com')) {
+        if ((Test-HttpsDownloadUrl -Url $probe -TimeoutSec 8).Ok) { return $true }
+    }
+    return $false
+}
+
+function Save-VerifiedInstaller {
+    param(
+        [string]$Url,
+        [string]$Destination
+    )
+
+    $allowed = @('.exe', '.msi', '.msix', '.msixbundle', '.appx', '.zip')
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -MaximumRedirection 10 -TimeoutSec 900 -ErrorAction Stop
+    }
+    catch {
+        throw "Download failed: $($_.Exception.Message)"
+    }
+    if (-not (Test-Path -LiteralPath $Destination)) { throw 'The download created no file.' }
+    $file = Get-Item -LiteralPath $Destination
+    if ($file.Length -le 0) { throw 'The downloaded file is empty (0 bytes).' }
+    if ($allowed -notcontains $file.Extension.ToLowerInvariant()) { throw "Unexpected file type: $($file.Extension)" }
+    return $file
+}
+
+function Get-NewAppSourceLabel {
+    param([hashtable]$Source)
+
+    switch ($Source.Method) {
+        'winget' { return 'winget' }
+        'msstore' { return 'Microsoft Store' }
+        'github' { return 'GitHub Releases' }
+        'website' { return 'the official website' }
+        'browser' { return 'the browser' }
+        default { return [string]$Source.Method }
+    }
+}
+
+function Get-GitHubLatestNewAppAsset {
+    param(
+        [string]$Repository,
+        [string]$Pattern
+    )
+
+    if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "Invalid GitHub repository: $Repository" }
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" -Headers @{ 'User-Agent' = 'Spicetify-PC-Setup-Helper' } -ErrorAction Stop
+    $assets = @($release.assets | Where-Object { $_.name -match $Pattern })
+    if ($assets.Count -eq 0) { throw "The latest release of $Repository has no matching Windows installer." }
+    $asset = $assets[0]
+    if ($asset.browser_download_url -notmatch '^https://github\.com/') { throw 'GitHub returned an untrusted download URL.' }
+    return @{ Release = $release; Asset = $asset }
+}
+
+function Get-WebsiteDownloadUrl {
+    param([hashtable]$Source)
+
+    if ($Source.Direct) { return $Source.Url }
+    $page = Invoke-WebRequest -Uri $Source.Url -UseBasicParsing -MaximumRedirection 10 -TimeoutSec 30 -ErrorAction Stop
+    $pattern = if ($Source.LinkPattern) { $Source.LinkPattern } else { '(?i)\.(exe|msi|msix|appx|zip)(\?|$)' }
+    foreach ($match in [regex]::Matches([string]$page.Content, 'href\s*=\s*["'']([^"'']+)["'']')) {
+        $link = $match.Groups[1].Value
+        if ($link -notmatch $pattern) { continue }
+        if ($link -notmatch '(?i)\.(exe|msi|msix|appx|zip)(\?|#|$)') { continue }
+        if ($link -match '^https?://') { return $link }
+        if ($link -match '^//') { return "https:$link" }
+        return ([Uri]::new([Uri]$Source.Url, $link)).AbsoluteUri
+    }
+    throw 'The page contains no direct Windows download link.'
+}
+
+function Resolve-NewAppSource {
+    param([hashtable]$Source)
+
+    switch ($Source.Method) {
+        'winget' {
+            if (-not (Test-CommandAvailable 'winget')) { throw 'winget is not available.' }
+            $output = (& winget show --id $Source.Id --exact --source winget --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $output -match '(?i)no package found') { throw "winget has no package with ID $($Source.Id)." }
+            $version = ''
+            if ($output -match '(?im)^\s*Version:\s*(\S+)') { $version = $matches[1].Trim() }
+            return @{ Method = 'winget'; Label = 'winget'; PackageId = $Source.Id; PackageSource = 'winget'; Version = $version; Url = ''; FileName = ''; SilentArgs = @() }
+        }
+        'msstore' {
+            if (-not (Test-CommandAvailable 'winget')) { throw 'winget is not available.' }
+            $output = (& winget show --id $Source.ProductId --exact --source msstore --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $output -match '(?i)no package found') { throw "The Microsoft Store package $($Source.ProductId) was not found." }
+            $version = ''
+            if ($output -match '(?im)^\s*Version:\s*(\S+)' -and $matches[1] -notmatch '(?i)^unknown$') { $version = $matches[1].Trim() }
+            return @{ Method = 'msstore'; Label = 'Microsoft Store'; PackageId = $Source.ProductId; PackageSource = 'msstore'; Version = $version; Url = ''; FileName = ''; SilentArgs = @() }
+        }
+        'github' {
+            $resolved = Get-GitHubLatestNewAppAsset -Repository $Source.Repository -Pattern $Source.AssetPattern
+            $check = Test-HttpsDownloadUrl -Url $resolved.Asset.browser_download_url
+            if (-not $check.Ok) { throw "The download did not answer with HTTP 200 ($($check.Error))." }
+            return @{ Method = 'github'; Label = 'GitHub Releases'; PackageId = ''; PackageSource = ''; Version = [string]$resolved.Release.tag_name; Url = $resolved.Asset.browser_download_url; FileName = $resolved.Asset.name; SilentArgs = @($Source.SilentArgs) }
+        }
+        'website' {
+            $url = Get-WebsiteDownloadUrl -Source $Source
+            $check = Test-HttpsDownloadUrl -Url $url
+            if (-not $check.Ok) { throw "The download did not answer with HTTP 200 ($($check.Error))." }
+            $fileName = [string]$check.FileName
+            $extension = [IO.Path]::GetExtension($fileName).ToLowerInvariant()
+            if (@('.exe', '.msi', '.msix', '.appx', '.zip') -notcontains $extension) { throw "The download has an unexpected file type ($extension)." }
+            $version = ''
+            if ($Source.VersionPattern -and $fileName -match $Source.VersionPattern) { $version = $matches[1] }
+            return @{ Method = 'website'; Label = 'the official website'; PackageId = ''; PackageSource = ''; Version = $version; Url = $url; FileName = $fileName; SilentArgs = @($Source.SilentArgs) }
+        }
+        'browser' {
+            return @{ Method = 'browser'; Label = 'the browser'; PackageId = ''; PackageSource = ''; Version = ''; Url = $Source.Url; FileName = ''; SilentArgs = @() }
+        }
+        default { throw "Unknown method: $($Source.Method)" }
+    }
+}
+
+function Resolve-NewApp {
+    param([hashtable]$App)
+
+    for ($i = 0; $i -lt $App.Sources.Count; $i++) {
+        $source = $App.Sources[$i]
+        $label = Get-NewAppSourceLabel -Source $source
+        Write-Log -Message "$($App.Name): trying $label"
+        try {
+            $resolved = Resolve-NewAppSource -Source $source
+            Write-ThemedHost "  Resolved via $label." 'Success'
+            return $resolved
+        }
+        catch {
+            $nextLabel = if ($i + 1 -lt $App.Sources.Count) { Get-NewAppSourceLabel -Source $App.Sources[$i + 1] } else { 'nothing' }
+            Write-ThemedHost "  $label failed: $($_.Exception.Message)" 'Warning'
+            Write-ThemedHost "  Trying $nextLabel next." 'Muted'
+            Write-Log -Message "$($App.Name): $label failed - $($_.Exception.Message)" -Level 'WARN'
+        }
+    }
+
+    return $null
+}
+
+function Get-NewAppInstalledNames {
+    if ($null -eq $script:NewUninstallNames) {
+        $paths = @(
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        $names = @()
+        foreach ($item in @(Get-ItemProperty $paths -ErrorAction SilentlyContinue)) {
+            $property = $item.PSObject.Properties['DisplayName']
+            if ($null -ne $property -and $property.Value) { $names += [string]$property.Value }
+        }
+        $script:NewUninstallNames = $names
+    }
+    return $script:NewUninstallNames
+}
+
+function Test-NewAppInstalled {
+    param([hashtable]$App)
+
+    $names = @($App.DetectNames)
+    $excluded = @($App.DetectExclude | Where-Object { $_ })
+    if (Test-CommandAvailable 'winget') {
+        $inventory = (& winget list --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+        foreach ($name in $names) {
+            $lines = @([string]$inventory -split "`r?`n" | Where-Object { $_ -match "(?im)^\s*$([regex]::Escape($name))\s{2,}" })
+            foreach ($line in $lines) {
+                $skip = $false
+                foreach ($excludeName in $excluded) { if ($line -like "*$excludeName*") { $skip = $true; break } }
+                if (-not $skip) { return $true }
+            }
+        }
+    }
+    foreach ($displayName in @(Get-NewAppInstalledNames)) {
+        foreach ($name in $names) {
+            if ($displayName -notlike "*$name*") { continue }
+            $skip = $false
+            foreach ($excludeName in $excluded) { if ($displayName -like "*$excludeName*") { $skip = $true; break } }
+            if (-not $skip) { return $true }
+        }
+    }
+    return $false
+}
+
+function Install-NewApp {
+    param([hashtable]$App)
+
+    Write-Banner
+    Write-ThemedHost "  $($App.Name)" 'Accent'
+    Write-ThemedHost "  $($App.Description)" 'Muted'
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    Write-Log -Message "New app install requested: $($App.Name)"
+
+    if (Test-NewAppInstalled -App $App) {
+        Write-ThemedHost "  $($App.Name) is already installed - skipping." 'Success'
+        Pause-Script
+        return $true
+    }
+
+    if (-not (Test-InternetAvailable)) {
+        Write-ThemedHost '  No network connection. Check the connection and try again.' 'Error'
+        Write-Log -Message "No network connection for $($App.Name)" -Level 'ERROR'
+        Pause-Script
+        return $false
+    }
+
+    $resolution = Resolve-NewApp -App $App
+    if ($null -eq $resolution) {
+        Write-ThemedHost '  No automatic download method worked.' 'Error'
+        Write-ThemedHost "  Opening $($App.Url) so you can install it manually." 'Warning'
+        Open-BrowserFallback -Url $App.Url -AppName $App.Name | Out-Null
+        Pause-Script
+        return $false
+    }
+
+    if ($resolution.Method -eq 'browser') {
+        $opened = Open-BrowserFallback -Url $resolution.Url -AppName $App.Name
+        if ($opened) { Write-ThemedHost '  Download and install it manually from the page that opened.' 'Warning' }
+        Pause-Script
+        return $opened
+    }
+
+    if ($resolution.Method -in @('winget', 'msstore')) {
+        $arguments = @('install', '--id', $resolution.PackageId, '--exact', '--source', $resolution.PackageSource, '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
+        $ok = Invoke-External -Label "Installing $($App.Name) via $($resolution.Label)" -Action { & winget @arguments }
+        if ($ok) {
+            $script:NewUninstallNames = $null
+            Write-ThemedHost "  $($App.Name) installed successfully." 'Success'
+        }
+        else {
+            Write-ThemedHost "  $($resolution.Label) install failed. Open the app page to install manually: $($App.Url)" 'Error'
+        }
+        Pause-Script
+        return $ok
+    }
+
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("SpicetifyHelper-" + [Guid]::NewGuid().ToString('N'))
+    $downloaded = $false
+    try {
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        $fileName = if ($resolution.FileName) { [IO.Path]::GetFileName([string]$resolution.FileName) } else { "$($App.Key).exe" }
+        Write-ThemedHost "  Downloading $fileName..." 'Warning'
+        try {
+            $installer = Save-VerifiedInstaller -Url $resolution.Url -Destination (Join-Path $tempRoot $fileName)
+            $downloaded = $true
+        }
+        catch {
+            Write-ThemedHost "  $($_.Exception.Message)" 'Error'
+            Write-Log -Message "$($App.Name) download failed: $($_.Exception.Message)" -Level 'ERROR'
+            Write-ThemedHost "  Opening $($App.Url) in the browser instead." 'Warning'
+            Open-BrowserFallback -Url $App.Url -AppName $App.Name | Out-Null
+        }
+
+        if (-not $downloaded) {
+            Pause-Script
+            return $false
+        }
+
+        $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+        Write-ThemedHost "  Signature: $($signature.Status)." 'Muted'
+        Write-Log -Message "$($App.Name) signature: $($signature.Status)"
+        if ($signature.Status -in @('HashMismatch', 'NotTrusted')) { throw "Invalid Authenticode signature: $($signature.Status)" }
+
+        $extension = $installer.Extension.ToLowerInvariant()
+        if ($extension -eq '.msi') {
+            $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $installer.FullName, '/qn', '/norestart') -Wait -PassThru
+            $exitCode = $process.ExitCode
+        }
+        elseif ($extension -in @('.msix', '.msixbundle', '.appx')) {
+            Add-AppxPackage -Path $installer.FullName -ErrorAction Stop
+            $exitCode = 0
+        }
+        elseif ($extension -eq '.zip') {
+            $extractPath = Join-Path $tempRoot 'extracted'
+            Expand-Archive -LiteralPath $installer.FullName -DestinationPath $extractPath -Force
+            $setup = Get-ChildItem -LiteralPath $extractPath -Filter '*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -eq $setup) { throw 'The ZIP contained no executable to run.' }
+            $process = Start-Process -FilePath $setup.FullName -Wait -PassThru
+            $exitCode = $process.ExitCode
+        }
+        elseif ($extension -eq '.exe') {
+            $startArgs = @{ FilePath = $installer.FullName; Wait = $true; PassThru = $true }
+            if (@($resolution.SilentArgs).Count -gt 0) { $startArgs.ArgumentList = @($resolution.SilentArgs) }
+            $process = Start-Process @startArgs
+            $exitCode = $process.ExitCode
+        }
+        else {
+            throw "Unsupported installer type: $extension"
+        }
+
+        if ($exitCode -notin @(0, 3010, 1641)) {
+            if ($exitCode -eq 1223) { throw 'Administrator rights were declined. Start this helper as Administrator and try again.' }
+            throw "Installer exited with code $exitCode."
+        }
+
+        $script:NewUninstallNames = $null
+        Write-ThemedHost "  $($App.Name) installed successfully via $($resolution.Label)." 'Success'
+        Write-Log -Message "$($App.Name) installed via $($resolution.Label)"
+        Pause-Script
+        return $true
+    }
+    catch {
+        Write-ThemedHost "  $($App.Name) install failed: $($_.Exception.Message)" 'Error'
+        Write-Log -Message "$($App.Name) install failed: $($_.Exception.Message)" -Level 'ERROR'
+        Write-ThemedHost "  Opening $($App.Url) so you can install it manually." 'Warning'
+        Open-BrowserFallback -Url $App.Url -AppName $App.Name | Out-Null
+        Pause-Script
+        return $false
+    }
+    finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-NewAppDefinitions {
+    return @(
+        @{
+            Key = 'freebuff'; Name = 'Freebuff'; Description = 'Free AI coding agent for Windows.'
+            DetectNames = @('Freebuff'); Url = 'https://freebuff.com/'
+            Sources = @(
+                @{ Method = 'website'; Url = 'https://freebuff.com/api/desktop/download/windows'; Direct = $true; VersionPattern = '(?i)Freebuff-([0-9][0-9.]*)-win'; SilentArgs = @('/S') }
+                @{ Method = 'browser'; Url = 'https://freebuff.com/' }
+            )
+        }
+        @{
+            Key = 'protonvpn'; Name = 'Proton VPN'; Description = 'Encrypted VPN from Proton AG.'
+            DetectNames = @('Proton VPN', 'ProtonVPN'); Url = 'https://protonvpn.com/download'
+            Sources = @(
+                @{ Method = 'winget'; Id = 'Proton.ProtonVPN' }
+                @{ Method = 'github'; Repository = 'ProtonVPN/win-app'; AssetPattern = '(?i)^ProtonVPN_.*x64\.exe$'; SilentArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') }
+                @{ Method = 'website'; Url = 'https://protonvpn.com/download'; LinkPattern = '(?i)protonvpn.*\.exe' }
+                @{ Method = 'browser'; Url = 'https://protonvpn.com/download' }
+            )
+        }
+        @{
+            Key = 'fenn'; Name = 'Fenn'; Description = 'Notch and taskbar tools for Windows 10 and 11.'
+            DetectNames = @('Fenn', 'Nook'); Url = 'https://fenn.click/'
+            Sources = @(
+                @{ Method = 'github'; Repository = 'Geguchh024/nook'; AssetPattern = '(?i)^Fenn-Setup-.*\.exe$'; SilentArgs = @('/S') }
+                @{ Method = 'browser'; Url = 'https://fenn.click/' }
+            )
+        }
+        @{
+            Key = 'screenwise'; Name = 'ScreenWise'; Description = 'Local screen-time statistics without an account or cloud.'
+            DetectNames = @('ScreenWise'); Url = 'https://apps.microsoft.com/detail/9nnl1ztxph8c'
+            Sources = @(
+                @{ Method = 'msstore'; ProductId = '9NNL1ZTXPH8C' }
+                @{ Method = 'browser'; Url = 'https://apps.microsoft.com/detail/9nnl1ztxph8c' }
+            )
+        }
+        @{
+            Key = 'qwiktwik'; Name = 'QwikTwik'; Description = 'Windows optimization for gaming with rollback points.'
+            DetectNames = @('QwikTwik'); Url = 'https://qwiktwik.com/'
+            Sources = @(
+                @{ Method = 'msstore'; ProductId = 'XPDNGJWFP6G6L9' }
+                @{ Method = 'website'; Url = 'https://qwiktwik.com/'; LinkPattern = '(?i)qwiktwik.*\.exe' }
+                @{ Method = 'browser'; Url = 'https://qwiktwik.com/' }
+            )
+        }
+        @{
+            Key = 'revo'; Name = 'Revo Uninstaller'; Description = 'Free uninstaller that cleans up leftovers.'
+            DetectNames = @('Revo Uninstaller'); DetectExclude = @('Pro'); Url = 'https://www.revouninstaller.com/revo-uninstaller-free-download/'
+            Sources = @(
+                @{ Method = 'winget'; Id = 'RevoUninstaller.RevoUninstaller' }
+                @{ Method = 'website'; Url = 'https://www.revouninstaller.com/start-freeware-download/'; LinkPattern = '(?i)revosetup\.exe$'; SilentArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') }
+                @{ Method = 'browser'; Url = 'https://www.revouninstaller.com/revo-uninstaller-free-download/' }
+            )
+        }
+    )
+}
+
+function Get-NewAppDefinition {
+    param([string]$Key)
+    return @(Get-NewAppDefinitions | Where-Object { $_.Key -eq $Key })[0]
+}
+
+function Install-Freebuff {
+    $null = Install-NewApp -App (Get-NewAppDefinition 'freebuff')
+}
+
+function Install-ProtonVPN {
+    $null = Install-NewApp -App (Get-NewAppDefinition 'protonvpn')
+}
+
+function Install-Fenn {
+    $null = Install-NewApp -App (Get-NewAppDefinition 'fenn')
+}
+
+function Install-ScreenWise {
+    $null = Install-NewApp -App (Get-NewAppDefinition 'screenwise')
+}
+
+function Install-QwikTwik {
+    $null = Install-NewApp -App (Get-NewAppDefinition 'qwiktwik')
+}
+
+function Install-RevoUninstaller {
+    $null = Install-NewApp -App (Get-NewAppDefinition 'revo')
+}
+
+#endregion New App Resolvers
+
 function Install-Spotify {
     param([switch]$Silent)
 
@@ -1446,6 +1926,531 @@ function Install-AllGamingLaunchers {
 }
 
 #endregion App Installers
+
+#region App Updates
+
+$script:UpdateWingetList = $null
+$script:UpdateWingetUpgradeTable = $null
+$script:UpdateRegistryApps = $null
+
+function Reset-UpdateCaches {
+    $script:UpdateWingetList = $null
+    $script:UpdateWingetUpgradeTable = $null
+    $script:UpdateRegistryApps = $null
+}
+
+function Get-UpdateableAppDefinitions {
+    return @(
+        @{ Key = 'spotify'; Name = 'Spotify'; Type = 'winget'; Id = 'Spotify.Spotify'; DetectNames = @('Spotify') }
+        @{ Key = 'awesun'; Name = 'AweSun Remote Desktop'; Type = 'winget'; Id = 'Oray.AweSun'; DetectNames = @('AweSun') }
+        @{ Key = 'landrop'; Name = 'LANDrop'; Type = 'winget'; Id = 'LANDrop.LANDrop'; DetectNames = @('LANDrop') }
+        @{ Key = 'firefox'; Name = 'Firefox'; Type = 'winget'; Id = 'Mozilla.Firefox'; DetectNames = @('Firefox') }
+        @{ Key = 'brave'; Name = 'Brave'; Type = 'winget'; Id = 'BraveSoftware.Brave'; DetectNames = @('Brave') }
+        @{ Key = 'chrome'; Name = 'Google Chrome'; Type = 'winget'; Id = 'Google.Chrome'; DetectNames = @('Google Chrome') }
+        @{ Key = 'steam'; Name = 'Steam'; Type = 'winget'; Id = 'Valve.Steam'; DetectNames = @('Steam') }
+        @{ Key = 'epic'; Name = 'Epic Games Launcher'; Type = 'winget'; Id = 'EpicGames.EpicGamesLauncher'; DetectNames = @('Epic Games') }
+        @{ Key = 'git'; Name = 'Git'; Type = 'winget'; Id = 'Git.Git'; DetectNames = @('Git') }
+        @{ Key = 'vscode'; Name = 'VS Code'; Type = 'winget'; Id = 'Microsoft.VisualStudioCode'; DetectNames = @('Visual Studio Code') }
+        @{ Key = 'nodejs'; Name = 'Node.js LTS'; Type = 'winget'; Id = 'OpenJS.NodeJS.LTS'; DetectNames = @('Node.js') }
+        @{ Key = 'terminal'; Name = 'Windows Terminal'; Type = 'winget'; Id = 'Microsoft.WindowsTerminal'; DetectNames = @('Windows Terminal') }
+        @{ Key = '7zip'; Name = '7-Zip'; Type = 'winget'; Id = '7zip.7zip'; DetectNames = @('7-Zip') }
+        @{ Key = 'freebuff'; Name = 'Freebuff'; Type = 'website'; DefinitionKey = 'freebuff'; DetectNames = @('Freebuff'); ProcessNames = @('Freebuff') }
+        @{ Key = 'protonvpn'; Name = 'Proton VPN'; Type = 'winget'; Id = 'Proton.ProtonVPN'; DetectNames = @('Proton VPN', 'ProtonVPN') }
+        @{ Key = 'fenn'; Name = 'Fenn'; Type = 'github'; Repository = 'Geguchh024/nook'; AssetPattern = '(?i)^Fenn-Setup-.*\.exe$'; SilentArgs = @('/S'); DetectNames = @('Fenn'); DetectExclude = @('Pro'); ProcessNames = @('Fenn') }
+        @{ Key = 'screenwise'; Name = 'ScreenWise'; Type = 'msstore'; Id = '9NNL1ZTXPH8C'; DetectNames = @('ScreenWise') }
+        @{ Key = 'qwiktwik'; Name = 'QwikTwik'; Type = 'msstore'; Id = 'XPDNGJWFP6G6L9'; DetectNames = @('QwikTwik') }
+        @{ Key = 'revo'; Name = 'Revo Uninstaller'; Type = 'winget'; Id = 'RevoUninstaller.RevoUninstaller'; DetectNames = @('Revo Uninstaller'); DetectExclude = @('Pro') }
+    )
+}
+
+function Get-UpdateWingetInventory {
+    if ($null -eq $script:UpdateWingetList) {
+        $script:UpdateWingetList = (& winget list --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+    }
+    return $script:UpdateWingetList
+}
+
+function Get-UpdateWingetUpgradeTable {
+    if ($null -eq $script:UpdateWingetUpgradeTable) {
+        $script:UpdateWingetUpgradeTable = (& winget upgrade --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+    }
+    return $script:UpdateWingetUpgradeTable
+}
+
+function Get-UpdateRegistryApps {
+    if ($null -eq $script:UpdateRegistryApps) {
+        $paths = @(
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        $entries = @()
+        foreach ($item in @(Get-ItemProperty $paths -ErrorAction SilentlyContinue)) {
+            $displayName = $item.PSObject.Properties['DisplayName']
+            if ($null -eq $displayName -or -not $displayName.Value) { continue }
+            $displayVersion = $item.PSObject.Properties['DisplayVersion']
+            $entries += @{
+                DisplayName = [string]$displayName.Value
+                Version = if ($null -ne $displayVersion) { [string]$displayVersion.Value } else { '' }
+            }
+        }
+        $script:UpdateRegistryApps = $entries
+    }
+    return $script:UpdateRegistryApps
+}
+
+function Find-UpdateWingetRow {
+    param(
+        [string]$Table,
+        [string]$Id
+    )
+
+    foreach ($line in @($Table -split "`r?`n")) {
+        if ($line -notmatch [regex]::Escape($Id)) { continue }
+        $parts = @($line -split '\s{2,}' | Where-Object { $_ })
+        if ($parts.Count -ge 3) {
+            return @{
+                Name = $parts[0]
+                Installed = $parts[2].Trim()
+                Available = if ($parts.Count -ge 4) { $parts[3].Trim() } else { '' }
+            }
+        }
+    }
+    return $null
+}
+
+function Get-InstalledAppInfo {
+    param([hashtable]$App)
+
+    $names = @($App.DetectNames)
+    $excluded = @($App.DetectExclude | Where-Object { $_ })
+
+    if (Test-CommandAvailable 'winget') {
+        $inventory = Get-UpdateWingetInventory
+        if ($App.Id) {
+            foreach ($line in @([string]$inventory -split "`r?`n")) {
+                if ($line -notmatch [regex]::Escape([string]$App.Id)) { continue }
+                $parts = @($line -split '\s{2,}' | Where-Object { $_ })
+                $version = if ($parts.Count -ge 3) { $parts[2].Trim() } else { '' }
+                return @{ Installed = $true; Version = $version; Source = 'winget'; Detail = $line.Trim() }
+            }
+        }
+        foreach ($name in $names) {
+            $lines = @([string]$inventory -split "`r?`n" | Where-Object { $_ -match "(?im)^\s*$([regex]::Escape($name))\s{2,}" })
+            foreach ($line in $lines) {
+                $skip = $false
+                foreach ($excludeName in $excluded) { if ($line -like "*$excludeName*") { $skip = $true; break } }
+                if ($skip) { continue }
+                $parts = @($line -split '\s{2,}' | Where-Object { $_ })
+                $version = if ($parts.Count -ge 3) { $parts[2].Trim() } else { '' }
+                return @{ Installed = $true; Version = $version; Source = 'winget'; Detail = $line.Trim() }
+            }
+        }
+    }
+
+    foreach ($entry in @(Get-UpdateRegistryApps)) {
+        $matched = $false
+        foreach ($name in $names) {
+            if ($entry.DisplayName -like "*$name*") { $matched = $true; break }
+        }
+        if (-not $matched) { continue }
+        $skip = $false
+        foreach ($excludeName in $excluded) {
+            if ($entry.DisplayName -like "*$excludeName*") { $skip = $true; break }
+        }
+        if ($skip) { continue }
+        $version = [string]$entry.Version
+        if (-not $version -and $entry.DisplayName -match '([0-9]+(?:\.[0-9]+)+)\s*$') { $version = $matches[1] }
+        return @{ Installed = $true; Version = $version; Source = 'registry'; Detail = $entry.DisplayName }
+    }
+
+    return @{ Installed = $false; Version = ''; Source = ''; Detail = '' }
+}
+
+function Compare-AppVersion {
+    param(
+        [string]$Installed,
+        [string]$Latest
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Installed) -or [string]::IsNullOrWhiteSpace($Latest)) { return $null }
+    $installedText = $Installed.Trim() -replace '^[vV]', ''
+    $latestText = $Latest.Trim() -replace '^[vV]', ''
+    if ($installedText -match '^([0-9]+(?:\.[0-9]+)*)') { $installedText = $matches[1] }
+    if ($latestText -match '^([0-9]+(?:\.[0-9]+)*)') { $latestText = $matches[1] }
+    try {
+        $installedVersion = [version]$installedText
+        $latestVersion = [version]$latestText
+        if ($latestVersion -gt $installedVersion) { return 1 }
+        if ($latestVersion -lt $installedVersion) { return -1 }
+        return 0
+    }
+    catch { return $null }
+}
+
+function Test-AppProcessRunning {
+    param([string[]]$ProcessNames)
+
+    foreach ($name in @($ProcessNames | Where-Object { $_ })) {
+        if (Get-Process -Name $name -ErrorAction SilentlyContinue) { return $name }
+    }
+    return $null
+}
+
+function Update-WingetMenuApp {
+    param(
+        [hashtable]$App,
+        [hashtable]$Info,
+        [switch]$DryRun
+    )
+
+    $row = Find-UpdateWingetRow -Table (Get-UpdateWingetUpgradeTable) -Id ([string]$App.Id)
+    if ($null -eq $row) {
+        $installedText = if ($Info.Version) { $Info.Version } else { 'unknown' }
+        Write-ThemedHost ("  {0}: installed {1} - already up to date." -f $App.Name, $installedText) 'Success'
+        return 'uptodate'
+    }
+
+    Write-ThemedHost ("  {0}: installed {1} -> latest {2}" -f $App.Name, $row.Installed, $row.Available) 'Foreground'
+    if ($DryRun) {
+        Write-ThemedHost '  Dry run: no changes made.' 'Muted'
+        return 'available'
+    }
+
+    $arguments = @('upgrade', '--id', [string]$App.Id, '--exact', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
+    Write-Log -Message "winget upgrade $($App.Id)"
+    $output = (& winget @arguments 2>&1 | Out-String)
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        Write-ThemedHost "  $($App.Name) was updated." 'Success'
+        Write-Log -Message "$($App.Name) updated via winget"
+        Reset-UpdateCaches
+        return 'updated'
+    }
+    if ($exitCode -eq -1978335189) {
+        Write-ThemedHost "  $($App.Name) already has the latest version." 'Success'
+        return 'uptodate'
+    }
+    Write-ThemedHost "  winget upgrade failed for $($App.Name) (exit $exitCode)." 'Error'
+    Write-Log -Message "winget upgrade failed for $($App.Id): exit $exitCode" -Level 'ERROR'
+    if ($output) { Write-Log -Message $output.Trim() -Level 'ERROR' }
+    return 'failed'
+}
+
+function Update-StoreMenuApp {
+    param(
+        [hashtable]$App,
+        [hashtable]$Info,
+        [switch]$DryRun
+    )
+
+    $row = Find-UpdateWingetRow -Table (Get-UpdateWingetUpgradeTable) -Id ([string]$App.Id)
+    if ($null -ne $row) {
+        Write-ThemedHost ("  {0}: installed {1} -> latest {2}" -f $App.Name, $row.Installed, $row.Available) 'Foreground'
+    }
+    else {
+        $installedText = if ($Info.Version) { $Info.Version } else { 'unknown' }
+        Write-ThemedHost ("  {0}: installed {1} - winget reports no pending Store update." -f $App.Name, $installedText) 'Muted'
+    }
+
+    if ($DryRun) {
+        Write-ThemedHost '  Dry run: no changes made.' 'Muted'
+        if ($null -ne $row) { return 'available' }
+        return 'uptodate'
+    }
+
+    $arguments = @('upgrade', '--id', [string]$App.Id, '--exact', '--source', 'msstore', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
+    Write-Log -Message "winget upgrade (msstore) $($App.Id)"
+    $output = (& winget @arguments 2>&1 | Out-String)
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        Write-ThemedHost "  $($App.Name) was updated." 'Success'
+        Write-Log -Message "$($App.Name) updated via Microsoft Store"
+        Reset-UpdateCaches
+        return 'updated'
+    }
+    if ($exitCode -eq -1978335189) {
+        Write-ThemedHost "  $($App.Name) already has the latest version." 'Success'
+        return 'uptodate'
+    }
+    Write-ThemedHost "  Microsoft Store upgrade failed for $($App.Name) (exit $exitCode)." 'Error'
+    Write-Log -Message "Store upgrade failed for $($App.Id): exit $exitCode" -Level 'ERROR'
+    if ($output) { Write-Log -Message $output.Trim() -Level 'ERROR' }
+    return 'failed'
+}
+
+function Update-GitHubMenuApp {
+    param(
+        [hashtable]$App,
+        [hashtable]$Info,
+        [switch]$DryRun
+    )
+
+    Write-ThemedHost "  Resolving the latest $($App.Name) release from GitHub..." 'Warning'
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$($App.Repository)/releases/latest" -Headers @{ 'User-Agent' = 'Spicetify-PC-Setup-Helper' } -ErrorAction Stop
+    $assets = @($release.assets | Where-Object { $_.name -match $App.AssetPattern })
+    if ($assets.Count -eq 0) { throw 'The latest release has no matching Windows installer.' }
+    $asset = $assets[0]
+    $latest = [string]$release.tag_name
+    $installedText = if ($Info.Version) { $Info.Version } else { 'unknown' }
+    Write-ThemedHost ("  {0}: installed {1} -> latest {2}" -f $App.Name, $installedText, $latest) 'Foreground'
+
+    $comparison = Compare-AppVersion -Installed $Info.Version -Latest $latest
+    if ($null -ne $comparison -and $comparison -le 0) {
+        Write-ThemedHost "  $($App.Name) is already up to date." 'Success'
+        return 'uptodate'
+    }
+    if ($null -eq $comparison) {
+        Write-ThemedHost '  The installed version could not be compared with the latest release.' 'Warning'
+        if (-not (Read-YesNo -Prompt '  Reinstall the latest release over the existing install?' -DefaultYes $false)) {
+            return 'skipped'
+        }
+    }
+
+    if ($DryRun) {
+        Write-ThemedHost ("  Dry run: would download {0} and run it in place." -f $asset.name) 'Muted'
+        return 'available'
+    }
+
+    $running = Test-AppProcessRunning -ProcessNames $App.ProcessNames
+    if ($running) {
+        Write-ThemedHost "  $running is running. Close it, then run the update again." 'Warning'
+        return 'skipped'
+    }
+
+    $check = Test-HttpsDownloadUrl -Url $asset.browser_download_url
+    if (-not $check.Ok) { throw "The download did not answer with HTTP 200 ($($check.Error))." }
+
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("NewSetupHelper-Update-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        $installer = Save-VerifiedInstaller -Url $asset.browser_download_url -Destination (Join-Path $tempRoot ([IO.Path]::GetFileName([string]$asset.name)))
+        $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+        Write-ThemedHost "  Signature: $($signature.Status)." 'Muted'
+        if ($signature.Status -in @('HashMismatch', 'NotTrusted')) { throw "Invalid Authenticode signature: $($signature.Status)" }
+
+        $startArgs = @{ FilePath = $installer.FullName; Wait = $true; PassThru = $true }
+        if (@($App.SilentArgs).Count -gt 0) { $startArgs.ArgumentList = @($App.SilentArgs) }
+        $process = Start-Process @startArgs
+        if ($process.ExitCode -notin @(0, 3010, 1641)) {
+            if ($process.ExitCode -eq 1223) { throw 'Administrator rights were declined. Start this helper as Administrator and try again.' }
+            throw "Installer exited with code $($process.ExitCode)."
+        }
+
+        Write-ThemedHost "  $($App.Name) was updated." 'Success'
+        Write-Log -Message "$($App.Name) updated to $latest"
+        Reset-UpdateCaches
+        return 'updated'
+    }
+    finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Update-WebsiteMenuApp {
+    param(
+        [hashtable]$App,
+        [hashtable]$Info,
+        [switch]$DryRun
+    )
+
+    $definition = Get-NewAppDefinition $App.DefinitionKey
+    if (-not $definition) { throw 'No resolver definition is available for this app.' }
+    $resolution = Resolve-NewApp -App $definition
+    if ($null -eq $resolution) { throw 'No automatic download method worked.' }
+    if ($resolution.Method -eq 'browser') {
+        Write-ThemedHost '  Update is not supported automatically for this app right now.' 'Warning'
+        Write-ThemedHost "  Install the latest version manually from $($resolution.Url)." 'Muted'
+        return 'unsupported'
+    }
+
+    $latest = [string]$resolution.Version
+    $installedText = if ($Info.Version) { $Info.Version } else { 'unknown' }
+    $latestText = if ($latest) { $latest } else { 'unknown' }
+    Write-ThemedHost ("  {0}: installed {1} -> latest {2}" -f $App.Name, $installedText, $latestText) 'Foreground'
+
+    $comparison = Compare-AppVersion -Installed $Info.Version -Latest $latest
+    if ($null -ne $comparison -and $comparison -le 0) {
+        Write-ThemedHost "  $($App.Name) is already up to date." 'Success'
+        return 'uptodate'
+    }
+    if ($null -eq $comparison) {
+        Write-ThemedHost '  The installed version could not be compared with the latest download.' 'Warning'
+        if (-not (Read-YesNo -Prompt '  Reinstall the latest installer over the existing install?' -DefaultYes $false)) {
+            return 'skipped'
+        }
+    }
+
+    if ($DryRun) {
+        Write-ThemedHost ("  Dry run: would download {0} and run it in place." -f $resolution.FileName) 'Muted'
+        return 'available'
+    }
+
+    $running = Test-AppProcessRunning -ProcessNames $App.ProcessNames
+    if ($running) {
+        Write-ThemedHost "  $running is running. Close it, then run the update again." 'Warning'
+        return 'skipped'
+    }
+
+    $check = Test-HttpsDownloadUrl -Url $resolution.Url
+    if (-not $check.Ok) { throw "The download did not answer with HTTP 200 ($($check.Error))." }
+
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("NewSetupHelper-Update-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        $fileName = if ($resolution.FileName) { [IO.Path]::GetFileName([string]$resolution.FileName) } else { "$($App.Key)-update.exe" }
+        $installer = Save-VerifiedInstaller -Url $resolution.Url -Destination (Join-Path $tempRoot $fileName)
+        $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+        Write-ThemedHost "  Signature: $($signature.Status)." 'Muted'
+        if ($signature.Status -in @('HashMismatch', 'NotTrusted')) { throw "Invalid Authenticode signature: $($signature.Status)" }
+
+        $startArgs = @{ FilePath = $installer.FullName; Wait = $true; PassThru = $true }
+        if (@($resolution.SilentArgs).Count -gt 0) { $startArgs.ArgumentList = @($resolution.SilentArgs) }
+        $process = Start-Process @startArgs
+        if ($process.ExitCode -notin @(0, 3010, 1641)) {
+            if ($process.ExitCode -eq 1223) { throw 'Administrator rights were declined. Start this helper as Administrator and try again.' }
+            throw "Installer exited with code $($process.ExitCode)."
+        }
+
+        Write-ThemedHost "  $($App.Name) was updated." 'Success'
+        Write-Log -Message "$($App.Name) updated via $($resolution.Label)"
+        Reset-UpdateCaches
+        return 'updated'
+    }
+    finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Update-MenuApp {
+    param(
+        [hashtable]$App,
+        [hashtable]$Info = $null,
+        [switch]$DryRun
+    )
+
+    if ($null -eq $Info) { $Info = Get-InstalledAppInfo -App $App }
+    if (-not $Info.Installed) {
+        Write-ThemedHost "  $($App.Name) is not installed - skipping." 'Muted'
+        return 'skipped'
+    }
+
+    try {
+        switch ($App.Type) {
+            'winget' { return (Update-WingetMenuApp -App $App -Info $Info -DryRun:$DryRun) }
+            'msstore' { return (Update-StoreMenuApp -App $App -Info $Info -DryRun:$DryRun) }
+            'github' { return (Update-GitHubMenuApp -App $App -Info $Info -DryRun:$DryRun) }
+            'website' { return (Update-WebsiteMenuApp -App $App -Info $Info -DryRun:$DryRun) }
+            default { return 'unsupported' }
+        }
+    }
+    catch {
+        Write-ThemedHost "  $($App.Name) update failed: $($_.Exception.Message)" 'Error'
+        Write-Log -Message "$($App.Name) update failed: $($_.Exception.Message)" -Level 'ERROR'
+        return 'failed'
+    }
+}
+
+function Update-AllMenuApps {
+    param([switch]$DryRun)
+
+    Write-Banner
+    if ($DryRun) { Write-ThemedHost '  UPDATE CHECK (DRY RUN)' 'Accent' }
+    else { Write-ThemedHost '  UPDATE ALL INSTALLED APPS' 'Accent' }
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    Write-ThemedHost ('  Update not supported: ' + ((Get-UnsupportedUpdateApps) -join ', ')) 'Muted'
+    Write-Log -Message $(if ($DryRun) { 'Update dry run started' } else { 'Update all started' })
+
+    if (-not (Test-InternetAvailable)) {
+        Write-ThemedHost '  No network connection. Check the connection and try again.' 'Error'
+        Pause-Script
+        return
+    }
+
+    Reset-UpdateCaches
+    $statuses = @{}
+    foreach ($app in Get-UpdateableAppDefinitions) {
+        Write-ThemedHost ''
+        Write-ThemedHost "  $($app.Name)" 'Muted'
+        $info = Get-InstalledAppInfo -App $app
+        if (-not $info.Installed) {
+            Write-ThemedHost '  Not installed - skipping.' 'Muted'
+            continue
+        }
+        $status = Update-MenuApp -App $app -Info $info -DryRun:$DryRun
+        if (-not $statuses.ContainsKey($status)) { $statuses[$status] = 0 }
+        $statuses[$status]++
+    }
+
+    Write-Host ''
+    Write-Host '  UPDATE SUMMARY' -ForegroundColor Cyan
+    foreach ($key in @('updated', 'available', 'uptodate', 'skipped', 'unsupported', 'failed')) {
+        if ($statuses.ContainsKey($key)) {
+            Write-Host ("    {0,-12} {1}" -f $key, $statuses[$key]) -ForegroundColor $(if ($key -eq 'failed') { 'Red' } elseif ($key -eq 'updated' -or $key -eq 'uptodate') { 'Green' } else { 'Gray' })
+        }
+    }
+    Write-Log -Message ("Update summary: " + (($statuses.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '))
+    Pause-Script
+}
+
+function Show-UpdateAppPicker {
+    Write-Banner
+    Write-ThemedHost '  UPDATE A SINGLE APP' 'Accent'
+    Write-ThemedHost '  -----------------------------------------------------' 'Muted'
+    Write-ThemedHost ('  Update not supported: ' + ((Get-UnsupportedUpdateApps) -join ', ')) 'Muted'
+    Write-ThemedHost ''
+
+    Reset-UpdateCaches
+    $entries = @()
+    foreach ($app in Get-UpdateableAppDefinitions) {
+        $info = Get-InstalledAppInfo -App $app
+        if ($info.Installed) {
+            $versionText = if ($info.Version) { $info.Version } else { 'unknown version' }
+            $entries += @{ App = $app; Version = $info.Version; Display = "$($app.Name) ($versionText)" }
+        }
+    }
+
+    if ($entries.Count -eq 0) {
+        Write-ThemedHost '  No updateable apps from this menu are installed.' 'Warning'
+        Pause-Script
+        return
+    }
+
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        Write-ThemedHost ("  [{0}] {1}" -f ($i + 1), $entries[$i].Display) 'Foreground'
+    }
+    Write-ThemedHost ''
+    $raw = Read-MenuChoice -Prompt 'App number'
+    $index = 0
+    if (-not [int]::TryParse($raw, [ref]$index) -or $index -lt 1 -or $index -gt $entries.Count) {
+        Write-ThemedHost '  Invalid app number. Nothing was updated.' 'Error'
+        Pause-Script
+        return
+    }
+
+    $selected = $entries[$index - 1]
+    Write-Host ''
+    $null = Update-MenuApp -App $selected.App
+    Pause-Script
+}
+
+function Get-UnsupportedUpdateApps {
+    return @('BetterDiscord', 'Vencord', 'OFF Helper')
+}
+
+function Start-UpdateSingleApp {
+    Show-UpdateAppPicker
+}
+
+function Start-UpdateAllApps {
+    Update-AllMenuApps
+}
+
+function Show-UpdateStatus {
+    Update-AllMenuApps -DryRun
+}
+
+#endregion App Updates
 
 #region App and Repo Installer
 
@@ -2496,6 +3501,15 @@ function Enter-AppsMenu {
             '16' { Install-7Zip }
             '17' { Install-AllDevTools }
             '18' { Install-AllGamingLaunchers }
+            '19' { Install-Freebuff }
+            '20' { Install-ProtonVPN }
+            '21' { Install-Fenn }
+            '22' { Install-ScreenWise }
+            '23' { Install-QwikTwik }
+            '24' { Install-RevoUninstaller }
+            '25' { Start-UpdateSingleApp }
+            '26' { Start-UpdateAllApps }
+            '27' { Show-UpdateStatus }
             '0'  { $stay = $false }
             default {
                 Write-Host '  Invalid choice.' -ForegroundColor Red
